@@ -612,12 +612,16 @@ describe('fileEditor tool', () => {
     })
 
     it('evicts past the byte cap', async () => {
-      const editor = makeFileEditor({ maxUndoBytes: 10 })
-      const p1 = await createTestFile('big1.txt', 'x'.repeat(100))
+      // Byte cap sized to fit one snapshot but not two, so a second edit forces the oldest out.
+      const snapshot = 'x'.repeat(100)
+      const editor = makeFileEditor({ maxUndoBytes: snapshot.length + 20 })
+      const p1 = await createTestFile('big1.txt', snapshot)
       const p2 = await createTestFile('big2.txt', 'y'.repeat(100))
       await editor.invoke({ command: 'str_replace', path: p1, old_str: 'x', new_str: 'X', replace_all: true }, context)
       await editor.invoke({ command: 'str_replace', path: p2, old_str: 'y', new_str: 'Y', replace_all: true }, context)
       await expect(editor.invoke({ command: 'undo_edit', path: p1 }, context)).rejects.toThrow('No undo history')
+      await editor.invoke({ command: 'undo_edit', path: p2 }, context)
+      expect(await fs.readFile(p2, 'utf-8')).toBe('y'.repeat(100))
     })
   })
 
