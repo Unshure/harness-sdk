@@ -153,9 +153,11 @@ class TestViewErrors:
             await editor(command="view", path="relative/path.txt", tool_context=ctx)
 
     @pytest.mark.asyncio
-    async def test_path_traversal_raises(self, editor, ctx):
-        with pytest.raises(ValueError, match="path traversal"):
-            await editor(command="view", path="/tmp/../etc/passwd", tool_context=ctx)
+    async def test_traversal_normalizes_and_uses_target(self, editor, ctx):
+        # No root configured: `..` normalizes lexically and the sandbox governs
+        # what exists. The resolver does not manufacture a traversal error.
+        with pytest.raises(ValueError, match="does not exist"):
+            await editor(command="view", path="/tmp/../nonexistent-xyzzy", tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_range_invalid_start_raises(self, editor, ctx, tmp_path):
@@ -490,7 +492,7 @@ class TestConfinementRoot:
         root = tmp_path / "workspace"
         root.mkdir()
         confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
-        with pytest.raises(ValueError, match="path traversal"):
+        with pytest.raises(ValueError, match="outside the configured root"):
             await confined(command="view", path=f"{root}/../outside.txt", tool_context=ctx)
 
     @pytest.mark.asyncio
@@ -516,6 +518,20 @@ class TestConfinementRoot:
     def test_rejects_relative_root_at_construction(self):
         with pytest.raises(ValueError, match="absolute path"):
             make_file_editor(root="relative/root")
+
+    def test_default_description_mentions_configured_root(self, tmp_path):
+        root = tmp_path / "workspace"
+        root.mkdir()
+        confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
+        assert str(root) in confined.tool_spec["description"]
+
+    def test_custom_description_is_not_rewritten(self, tmp_path):
+        root = tmp_path / "workspace"
+        root.mkdir()
+        confined = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(), root=str(root), description="custom description"
+        )
+        assert confined.tool_spec["description"] == "custom description"
 
     @pytest.mark.asyncio
     async def test_symlink_pointing_outside_root_is_rejected(self, ctx, tmp_path):

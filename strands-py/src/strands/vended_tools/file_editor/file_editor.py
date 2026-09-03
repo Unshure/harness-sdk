@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import posixpath
-import re
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Literal
 from weakref import WeakKeyDictionary
@@ -74,18 +73,19 @@ def make_file_editor(
             configured sandbox is used at call time.
         name: Tool name. Defaults to ``"file_editor"``.
         description: Tool description shown to the model.
-        root: Optional absolute directory that confines every operation. String-
-            level checks reject non-absolute paths and any ``..`` traversal on
-            the raw input; when the resolved target exists on the local host,
-            ``os.path.realpath`` is also applied and the resulting path must
-            still be inside ``root``. When ``root`` does not exist on the local
-            host (e.g. a container-side path in a Docker/SSH sandbox), the
-            editor fails closed on any operation: the local process cannot
-            canonicalize container-side paths, so silently degrading to only a
-            string-level check would leave the ``root`` guarantee unenforceable
-            against a symlink inside the sandbox. When ``root`` is ``None``,
-            only absolute-path and ``..``-traversal checks apply; the
-            underlying sandbox's symlink policy governs escape.
+        root: Optional absolute directory that confines every operation. Paths
+            are normalized (so ``..`` segments collapse before the containment
+            check) and the result must sit inside ``root``; when the resolved
+            target exists on the local host ``os.path.realpath`` is also
+            applied so a symlink whose target escapes ``root`` is rejected.
+            When ``root`` does not exist on the local host (e.g. a
+            container-side path in a Docker/SSH sandbox), the editor fails
+            closed on any operation: the local process cannot canonicalize
+            container-side paths, so silently degrading to only a lexical
+            check would leave the ``root`` guarantee unenforceable against a
+            symlink inside the sandbox. When ``root`` is ``None`` only the
+            absolute-path check applies and the underlying sandbox's symlink
+            policy governs escape.
         max_file_size: Maximum file size (bytes) accepted by view/edit
             commands. Defaults to 1 MB.
         max_undo_entries: Maximum number of distinct paths retained in the
@@ -104,6 +104,9 @@ def make_file_editor(
     if root is not None and not posixpath.isabs(root):
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
+
+    if normalized_root is not None and description is DEFAULT_FILE_EDITOR_DESCRIPTION:
+        description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
 
     # Per-agent bounded LRU: `agent -> {path -> previous content}`. Keyed with a
     # WeakKeyDictionary so a garbage-collected agent takes its undo state with
@@ -203,17 +206,17 @@ file_editor = make_file_editor()
 def _resolve_path(file_path: str, root: str | None) -> str:
     """Normalize a path and enforce confinement; the single validation funnel every command routes through.
 
-    Rejects non-absolute paths and ``..`` segments unconditionally. When
-    ``root`` is set the resolved path must sit inside it after both a string-
-    level check and, for any existing ancestor on the local host, a
-    ``realpath`` check. ``root`` that is not present on the local host fails
-    closed — see :func:`make_file_editor` for the reasoning.
+    Rejects non-absolute paths. When ``root`` is set the normalized path must
+    sit inside it, and for any existing ancestor on the local host an
+    ``os.path.realpath`` check also applies so a symlink cannot escape. ``root``
+    that is not present on the local host fails closed — see
+    :func:`make_file_editor` for the reasoning.
 
     Raises:
-        ValueError: On non-absolute paths, ``..`` traversal, out-of-root
-            resolution (including via symlink), or an unresolvable ``root``.
+        ValueError: On non-absolute paths, out-of-root resolution (including
+            via ``..`` or symlink), or an unresolvable ``root``.
     """
-    stripped = re.sub(r"[/\\]+$", "", file_path) or file_path
+    stripped = file_path.rstrip("/") or file_path
 
     if not posixpath.isabs(stripped):
         suggested = posixpath.abspath(stripped)
@@ -221,15 +224,11 @@ def _resolve_path(file_path: str, root: str | None) -> str:
             f"The path {file_path} is not an absolute path, it should start with `/`. Maybe you meant {suggested}?"
         )
 
-    # Reject '..' segments on the raw input -- normalize() would resolve them
-    # away and could silently permit escape past the root.
-    if ".." in re.split(r"[/\\]", stripped):
-        raise ValueError("Invalid path: path traversal is not allowed")
-
     normalized = posixpath.normpath(stripped)
 
     if root is not None:
-        if normalized != root and not normalized.startswith(root.rstrip("/") + "/"):
+        root_norm = posixpath.normpath(root).rstrip("/") or "/"
+        if normalized != root_norm and not normalized.startswith(root_norm.rstrip("/") + "/"):
             raise ValueError(f"Invalid path: {file_path} is outside the configured root {root}")
 
         # Fail closed when the local host cannot see `root`: without a local
