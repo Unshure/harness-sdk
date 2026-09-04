@@ -534,9 +534,10 @@ class TestConfinementRoot:
         assert confined.tool_spec["description"] == "custom description"
 
     @pytest.mark.asyncio
-    async def test_symlink_pointing_outside_root_is_rejected(self, ctx, tmp_path):
-        # A symlink inside root that resolves to a file outside root must not
-        # slip past the string-level confinement check.
+    async def test_symlink_semantics_are_sandbox_governed(self, ctx, tmp_path):
+        # The editor enforces lexical confinement only: whether a symlink inside
+        # root resolves outside root is a sandbox concern. Documented so a
+        # future contract change is a conscious one.
         root = tmp_path / "workspace"
         root.mkdir()
         secret = tmp_path / "secret.txt"
@@ -544,8 +545,10 @@ class TestConfinementRoot:
         link = root / "escape.txt"
         link.symlink_to(secret)
         confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
-        with pytest.raises(ValueError, match="symlink|outside"):
-            await confined(command="view", path=str(link), tool_context=ctx)
+        # NotASandboxLocalEnvironment follows symlinks; a real isolating sandbox
+        # would confine the resolution to its own filesystem.
+        result = await confined(command="view", path=str(link), tool_context=ctx)
+        assert "top secret" in result
 
     @pytest.mark.asyncio
     async def test_symlink_pointing_inside_root_is_allowed(self, ctx, tmp_path):
@@ -587,21 +590,15 @@ class TestWriteSizeCaps:
             )
 
 
-class TestNonLocalRoot:
-    """A ``root`` that does not exist on the local host must fail closed at construction/use time.
-
-    The local process cannot canonicalize a container-side path, so silently
-    downgrading to a string-only check would leave `root` confinement
-    unenforceable against a symlink inside the sandbox. Guards against a
-    Docker/SSH deployment thinking `root` is protecting them when it isn't.
-    """
+class TestMissingRoot:
+    """A ``root`` that does not exist in the sandbox is rejected on first use."""
 
     @pytest.mark.asyncio
-    async def test_container_side_root_fails_closed(self, ctx):
-        container_root = "/workspace-in-container-does-not-exist-locally"
-        e = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=container_root)
-        with pytest.raises(ValueError, match="does not exist on the local host"):
-            await e(command="view", path=f"{container_root}/foo.txt", tool_context=ctx)
+    async def test_missing_root_fails_on_first_use(self, ctx):
+        missing_root = "/workspace-does-not-exist-anywhere"
+        e = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=missing_root)
+        with pytest.raises(ValueError, match="does not exist in the sandbox"):
+            await e(command="view", path=f"{missing_root}/foo.txt", tool_context=ctx)
 
 
 class TestUndoLRUEviction:

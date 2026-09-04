@@ -3,7 +3,6 @@ import { z } from 'zod'
 import { Sandbox } from '../../sandbox/base.js'
 import { SandboxPathNotFoundError } from '../../sandbox/errors.js'
 import * as path from 'path'
-import * as fs from 'fs'
 import { Buffer } from 'buffer'
 
 const MB = 1024 * 1024
@@ -74,14 +73,13 @@ export interface MakeFileEditorOptions {
   name?: string
   description?: string
   /**
-   * Optional absolute directory that confines every operation. String-level
-   * checks reject non-absolute paths and any `..` traversal on the raw input;
-   * when the resolved target exists on the local host, `fs.realpathSync` is
-   * also applied and the result must still be inside `root`. When `root` is
-   * set but does not exist locally (a container-side path in a Docker/SSH
-   * sandbox), construction fails closed on the first call: the local process
-   * cannot canonicalize container-side paths, so accepting a lexical-only
-   * match would let a symlink inside the sandbox escape confinement.
+   * Optional absolute directory that confines every operation. Paths are
+   * normalized (so `..` segments collapse before the containment check) and
+   * must sit inside `root`. Confinement is *lexical*: the editor does not
+   * follow symlinks itself. Filesystem semantics — including whether a
+   * symlink inside `root` can escape it — are governed by the sandbox. On
+   * first use, the editor verifies `root` exists in the sandbox via
+   * {@link Sandbox.listFiles}; if it does not, the call fails.
    */
   root?: string
   /**
@@ -145,13 +143,39 @@ export function makeFileEditor(
     return history
   }
 
+  // Sandboxes already verified to contain `root`. WeakSet so a sandbox that
+  // goes out of scope does not pin the cache entry.
+  const verifiedSandboxes = new WeakSet<Sandbox>()
+
+  async function verifyRoot(sandbox: Sandbox): Promise<void> {
+    if (normalizedRoot === undefined || verifiedSandboxes.has(sandbox)) return
+    try {
+      await sandbox.listFiles(normalizedRoot)
+    } catch (error) {
+      if (error instanceof SandboxPathNotFoundError) {
+        throw new Error(`Invalid configuration: root ${normalizedRoot} does not exist in the sandbox.`, {
+          cause: error,
+        })
+      }
+      throw error
+    }
+    verifiedSandboxes.add(sandbox)
+  }
+
+  const description =
+    options.description ??
+    (normalizedRoot !== undefined
+      ? `${DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside ${normalizedRoot}.`
+      : DEFAULT_FILE_EDITOR_DESCRIPTION)
+
   return tool({
     name: options.name ?? 'fileEditor',
-    description: options.description ?? DEFAULT_FILE_EDITOR_DESCRIPTION,
+    description,
     inputSchema: fileEditorInputSchema,
     callback: async (input, context) => {
       if (!context) throw new Error('Tool context is required for fileEditor operations')
       const sandbox = boundSandbox ?? context.agent.sandbox
+      await verifyRoot(sandbox)
       const filePath = resolvePath(input.path, normalizedRoot)
       const undoHistory = getUndoHistory(context.agent as unknown as object)
 
@@ -200,16 +224,12 @@ export function makeFileEditor(
 export const fileEditor = makeFileEditor()
 
 /**
- * Normalize a path and enforce confinement; the single validation funnel every command routes through.
+ * Normalize a path and enforce lexical confinement.
  *
- * Rejects non-absolute paths and `..` segments unconditionally. When `root`
- * is set the resolved path must sit inside it after both a string-level
- * check and, for any existing ancestor on the local host, a `realpath`
- * check. A `root` that is not present on the local host fails closed —
- * see {@link MakeFileEditorOptions.root} for the reasoning.
+ * Rejects non-absolute paths. When `root` is set the normalized path must
+ * sit inside it. Symlink semantics are the sandbox's responsibility.
  *
- * @throws Error on non-absolute paths, `..` traversal, out-of-root
- *   resolution (including via symlink), or an unresolvable `root`.
+ * @throws Error on non-absolute paths or out-of-root resolution.
  */
 function resolvePath(filePath: string, root: string | undefined): string {
   // stripTrailingSep preserves a Windows drive root like `C:\` — a naive
@@ -223,57 +243,11 @@ function resolvePath(filePath: string, root: string | undefined): string {
     )
   }
 
-  // Reject `..` segments on the raw input — path.normalize resolves them away
-  // and could silently permit escape past the root.
-  if (stripped.split(/[/\\]/).includes('..')) {
-    throw new Error(`Invalid path: path traversal is not allowed`)
-  }
-
   // Platform-native normalization so Windows drive-letter paths survive.
   const normalized = stripTrailingSep(path.normalize(stripped))
 
-  if (root !== undefined) {
-    if (!isInsideRoot(normalized, root)) {
-      throw new Error(`Invalid path: ${filePath} is outside the configured root ${root}`)
-    }
-
-    // Fail closed when the local host cannot see `root`: without a local
-    // filesystem entry the realpath layer below has nothing to canonicalize,
-    // and a lexical-only match would let a symlink inside a container
-    // sandbox escape confinement silently.
-    if (!fs.existsSync(root)) {
-      throw new Error(
-        `Invalid configuration: root ${root} does not exist on the local host. ` +
-          `root confinement requires a locally resolvable directory so symlinks can be canonicalized; ` +
-          `construct the editor without root when routing through a container-side sandbox.`
-      )
-    }
-
-    // Walk to the deepest existing ancestor, then confirm its realpath is
-    // still inside root — this is what catches a symlink whose target sits
-    // outside root even though the raw path did not.
-    let probe = normalized
-    while (probe && !existsSyncLstat(probe)) {
-      const parent = path.dirname(probe)
-      if (parent === probe) break
-      probe = parent
-    }
-    if (probe && existsSyncLstat(probe)) {
-      let real: string
-      let rootReal: string
-      try {
-        real = fs.realpathSync(probe)
-        rootReal = fs.realpathSync(root)
-      } catch {
-        // realpath can fail on a broken symlink; treat that as an escape.
-        throw new Error(`Invalid path: ${filePath} could not be resolved for symlink confinement.`)
-      }
-      if (!isInsideRoot(real, rootReal)) {
-        throw new Error(
-          `Invalid path: ${filePath} resolves via symlink to ${real}, outside the configured root ${root}`
-        )
-      }
-    }
+  if (root !== undefined && !isInsideRoot(normalized, root)) {
+    throw new Error(`Invalid path: ${filePath} is outside the configured root ${root}`)
   }
 
   return normalized
@@ -351,15 +325,6 @@ function preflightInsertOutputSize(originalContent: string, newStr: string, maxS
     throw new Error(
       `The edit would produce a ${projected}-byte file at ${filePath}, exceeding the maximum allowed size of ${maxSize} bytes.`
     )
-  }
-}
-
-function existsSyncLstat(p: string): boolean {
-  try {
-    fs.lstatSync(p)
-    return true
-  } catch {
-    return false
   }
 }
 

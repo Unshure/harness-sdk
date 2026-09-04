@@ -168,10 +168,12 @@ describe('fileEditor tool', () => {
         )
       })
 
-      it('throws on path traversal with absolute path', async () => {
-        await expect(fileEditor.invoke({ command: 'view', path: '/tmp/../etc/passwd' }, context)).rejects.toThrow(
-          'path traversal'
-        )
+      it('normalizes .. and defers existence to the sandbox', async () => {
+        // No root configured: `..` normalizes lexically and the sandbox decides
+        // what exists. The resolver does not manufacture a traversal error.
+        await expect(
+          fileEditor.invoke({ command: 'view', path: '/tmp/../nonexistent-xyzzy' }, context)
+        ).rejects.toThrow(/does not exist/)
       })
 
       it('throws when view_range has invalid start line', async () => {
@@ -581,16 +583,12 @@ describe('fileEditor tool', () => {
     })
   })
 
-  describe('non-local root (docker-shaped)', () => {
-    it('fails closed when root does not exist locally', async () => {
-      // Guards #3235: `root` requires a locally resolvable directory so
-      // realpath can canonicalize. A container-side path in a Docker/SSH
-      // sandbox has no local counterpart, so accepting it lexically would
-      // leave a symlink inside the sandbox able to escape confinement.
-      const containerRoot = '/workspace-in-container-does-not-exist-locally'
-      const editor = makeFileEditor({ root: containerRoot })
-      await expect(editor.invoke({ command: 'view', path: `${containerRoot}/foo.txt` }, context)).rejects.toThrow(
-        'does not exist on the local host'
+  describe('missing root', () => {
+    it('rejects on first use when root does not exist in the sandbox', async () => {
+      const missingRoot = '/workspace-does-not-exist-anywhere'
+      const editor = makeFileEditor({ root: missingRoot })
+      await expect(editor.invoke({ command: 'view', path: `${missingRoot}/foo.txt` }, context)).rejects.toThrow(
+        'does not exist in the sandbox'
       )
     })
   })
@@ -814,12 +812,12 @@ describe('fileEditor tool', () => {
       )
     })
 
-    it('still rejects `..` traversal even with a root', async () => {
+    it('rejects a `..` traversal that escapes root after normalization', async () => {
       const rootDir = path.join(testDir, 'workspace')
       await fs.mkdir(rootDir)
       const confined = makeFileEditor({ root: rootDir })
       await expect(confined.invoke({ command: 'view', path: `${rootDir}/../outside.txt` }, context)).rejects.toThrow(
-        'path traversal'
+        'outside the configured root'
       )
     })
 
@@ -849,7 +847,11 @@ describe('fileEditor tool', () => {
       expect(() => makeFileEditor({ root: 'relative/root' })).toThrow('absolute path')
     })
 
-    it('rejects a symlink inside root that points outside root', async () => {
+    it('defers symlink semantics to the sandbox', async () => {
+      // The editor enforces lexical confinement only: whether a symlink inside
+      // root resolves outside root is a sandbox concern. NotASandbox has no
+      // isolation and follows the link; a real isolating sandbox would confine
+      // resolution to its own filesystem.
       const rootDir = path.join(testDir, 'workspace')
       await fs.mkdir(rootDir)
       const secret = path.join(testDir, 'secret.txt')
@@ -857,7 +859,8 @@ describe('fileEditor tool', () => {
       const link = path.join(rootDir, 'escape.txt')
       await fs.symlink(secret, link)
       const confined = makeFileEditor({ root: rootDir })
-      await expect(confined.invoke({ command: 'view', path: link }, context)).rejects.toThrow(/symlink|outside/)
+      const result = await confined.invoke({ command: 'view', path: link }, context)
+      expect(result).toContain('top secret')
     })
 
     it('allows a symlink inside root that points to a file also inside root', async () => {

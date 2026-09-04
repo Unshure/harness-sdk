@@ -9,11 +9,10 @@ sandbox read from ``tool_context.agent.sandbox`` at call time.
 
 from __future__ import annotations
 
-import os
 import posixpath
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Literal
-from weakref import WeakKeyDictionary
+from weakref import WeakKeyDictionary, WeakSet
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
@@ -75,17 +74,13 @@ def make_file_editor(
         description: Tool description shown to the model.
         root: Optional absolute directory that confines every operation. Paths
             are normalized (so ``..`` segments collapse before the containment
-            check) and the result must sit inside ``root``; when the resolved
-            target exists on the local host ``os.path.realpath`` is also
-            applied so a symlink whose target escapes ``root`` is rejected.
-            When ``root`` does not exist on the local host (e.g. a
-            container-side path in a Docker/SSH sandbox), the editor fails
-            closed on any operation: the local process cannot canonicalize
-            container-side paths, so silently degrading to only a lexical
-            check would leave the ``root`` guarantee unenforceable against a
-            symlink inside the sandbox. When ``root`` is ``None`` only the
-            absolute-path check applies and the underlying sandbox's symlink
-            policy governs escape.
+            check) and must sit inside ``root``. Confinement is *lexical*: the
+            editor does not follow symlinks itself. Filesystem semantics —
+            including whether a symlink inside ``root`` can escape it — are
+            governed by the sandbox. On first use, the editor verifies ``root``
+            exists in the sandbox via :meth:`Sandbox.list_files`; if it does
+            not, the call fails. When ``root`` is ``None`` only the
+            absolute-path check applies.
         max_file_size: Maximum file size (bytes) accepted by view/edit
             commands. Defaults to 1 MB.
         max_undo_entries: Maximum number of distinct paths retained in the
@@ -120,6 +115,21 @@ def make_file_editor(
             history = OrderedDict()
             undo_histories[agent] = history
         return history
+
+    # Sandboxes already verified to contain `root`. WeakSet so a sandbox that
+    # goes out of scope does not pin the cache entry.
+    verified_sandboxes: WeakSet[Sandbox] = WeakSet()
+
+    async def _verify_root(active: Sandbox) -> None:
+        if normalized_root is None or active in verified_sandboxes:
+            return
+        try:
+            await active.list_files(normalized_root)
+        except SandboxPathNotFoundError as error:
+            raise ValueError(
+                f"Invalid configuration: root {normalized_root} does not exist in the sandbox."
+            ) from error
+        verified_sandboxes.add(active)
 
     @tool(name=name, description=description, context="tool_context")
     async def file_editor_tool(
@@ -157,6 +167,7 @@ def make_file_editor(
                 broad edits.
         """
         active = sandbox if sandbox is not None else tool_context.agent.sandbox
+        await _verify_root(active)
         resolved = _resolve_path(path, normalized_root)
         undo_history = _get_undo_history(tool_context.agent)
 
@@ -204,17 +215,13 @@ file_editor = make_file_editor()
 
 
 def _resolve_path(file_path: str, root: str | None) -> str:
-    """Normalize a path and enforce confinement; the single validation funnel every command routes through.
+    """Normalize a path and enforce lexical confinement.
 
     Rejects non-absolute paths. When ``root`` is set the normalized path must
-    sit inside it, and for any existing ancestor on the local host an
-    ``os.path.realpath`` check also applies so a symlink cannot escape. ``root``
-    that is not present on the local host fails closed — see
-    :func:`make_file_editor` for the reasoning.
+    sit inside it. Symlink semantics are the sandbox's responsibility.
 
     Raises:
-        ValueError: On non-absolute paths, out-of-root resolution (including
-            via ``..`` or symlink), or an unresolvable ``root``.
+        ValueError: On non-absolute paths or out-of-root resolution.
     """
     stripped = file_path.rstrip("/") or file_path
 
@@ -230,35 +237,6 @@ def _resolve_path(file_path: str, root: str | None) -> str:
         root_norm = posixpath.normpath(root).rstrip("/") or "/"
         if normalized != root_norm and not normalized.startswith(root_norm.rstrip("/") + "/"):
             raise ValueError(f"Invalid path: {file_path} is outside the configured root {root}")
-
-        # Fail closed when the local host cannot see `root`: without a local
-        # filesystem entry the realpath layer below has nothing to canonicalize,
-        # and a lexical-only match would let a symlink inside a container
-        # sandbox escape confinement silently.
-        if not os.path.lexists(root):
-            raise ValueError(
-                f"Invalid configuration: root {root} does not exist on the local host. "
-                f"root confinement requires a locally resolvable directory so symlinks can be "
-                f"canonicalized; construct the editor without root when routing through a "
-                f"container-side sandbox."
-            )
-
-        # Walk to the deepest existing ancestor, then confirm its realpath is
-        # still inside root — this is what catches a symlink whose target sits
-        # outside root even though the raw path did not.
-        probe = normalized
-        while probe and probe != "/" and not os.path.lexists(probe):
-            parent = posixpath.dirname(probe)
-            if parent == probe:
-                break
-            probe = parent
-        if probe and os.path.lexists(probe):
-            real = os.path.realpath(probe)
-            root_real = os.path.realpath(root)
-            if real != root_real and not real.startswith(root_real.rstrip("/") + "/"):
-                raise ValueError(
-                    f"Invalid path: {file_path} resolves via symlink to {real}, outside the configured root {root}"
-                )
 
     return normalized
 
