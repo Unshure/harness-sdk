@@ -718,6 +718,43 @@ describe('fileEditor tool', () => {
       )
     })
 
+    it('survives across an agent.appState roundtrip', async () => {
+      // Undo history lives in agent.appState so a session manager can persist
+      // it. Simulate a rehydrated agent by copying the first agent's
+      // serialized state into a fresh one and confirm undo still restores the
+      // pre-edit content.
+      const filePath = await createTestFile('test.txt', 'original\n')
+      const editor = makeFileEditor()
+
+      const firstAgent = createMockAgent()
+      const firstContext: ToolContext = {
+        toolUse: { name: 'fileEditor', toolUseId: 'first', input: {} },
+        agent: firstAgent,
+        invocationState: {},
+        interrupt: () => {
+          throw new Error('interrupt not available in mock context')
+        },
+      }
+      await editor.invoke(
+        { command: 'str_replace', path: filePath, old_str: 'original', new_str: 'edited' },
+        firstContext
+      )
+      const serialized = firstAgent.appState.getAll()
+      expect(Object.keys(serialized).length).toBeGreaterThan(0)
+
+      const rehydrated = createMockAgent({ appState: serialized })
+      const rehydratedContext: ToolContext = {
+        toolUse: { name: 'fileEditor', toolUseId: 'second', input: {} },
+        agent: rehydrated,
+        invocationState: {},
+        interrupt: () => {
+          throw new Error('interrupt not available in mock context')
+        },
+      }
+      await editor.invoke({ command: 'undo_edit', path: filePath }, rehydratedContext)
+      expect(await fs.readFile(filePath, 'utf-8')).toBe('original\n')
+    })
+
     it('scopes history per calling agent within one editor instance', async () => {
       // Guards #3235: two agents sharing one editor factory must not see each
       // other's undo history, so agent B cannot restore agent A's snapshot

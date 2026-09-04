@@ -10,9 +10,8 @@ sandbox read from ``tool_context.agent.sandbox`` at call time.
 from __future__ import annotations
 
 import posixpath
-from collections import OrderedDict
-from typing import TYPE_CHECKING, Any, Literal
-from weakref import WeakKeyDictionary, WeakSet
+from typing import TYPE_CHECKING, Literal
+from weakref import WeakSet
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
@@ -36,6 +35,8 @@ DEFAULT_FILE_EDITOR_DESCRIPTION = (
     "replace_all), insert, find_line, and undo_edit. Files must use absolute paths."
 )
 
+DEFAULT_UNDO_STATE_KEY = "file_editor.undo_history"
+
 _Command = Literal[
     "view",
     "create",
@@ -44,6 +45,8 @@ _Command = Literal[
     "find_line",
     "undo_edit",
 ]
+
+_MUTATING_COMMANDS: frozenset[str] = frozenset({"create", "str_replace", "insert", "undo_edit"})
 
 
 def make_file_editor(
@@ -55,6 +58,7 @@ def make_file_editor(
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
     max_undo_entries: int = _DEFAULT_MAX_UNDO_ENTRIES,
     max_undo_bytes: int = _DEFAULT_MAX_UNDO_BYTES,
+    undo_state_key: str = DEFAULT_UNDO_STATE_KEY,
 ) -> DecoratedFunctionTool:
     """Create a sandbox-routed file editor tool.
 
@@ -63,9 +67,10 @@ def make_file_editor(
     sandbox implementations in :meth:`~strands.sandbox.base.Sandbox.get_tools`
     and by users who want a customized file editor.
 
-    Undo history is kept per calling agent (keyed on ``tool_context.agent`` via
-    a :class:`weakref.WeakKeyDictionary`), so two agents sharing one editor
-    factory cannot see or overwrite each other's snapshots.
+    Undo history is stored in ``tool_context.agent.state`` under
+    ``undo_state_key`` (default ``"file_editor.undo_history"``), so two agents
+    sharing one editor factory cannot see or overwrite each other's snapshots
+    and any configured session manager can persist it across restarts.
 
     Args:
         sandbox: Sandbox to bind at creation. When ``None``, the agent's
@@ -89,6 +94,9 @@ def make_file_editor(
         max_undo_bytes: Approximate cap on total bytes of file content held in
             the per-agent undo history (UTF-8). Oldest entries are evicted
             until the cap is met. Defaults to 32 MB.
+        undo_state_key: Key under which the undo history is stored in
+            ``agent.state``. Two editors sharing the same key on the same
+            agent will share undo history; use distinct keys to isolate them.
 
     Returns:
         A decorated tool that performs file operations through the sandbox.
@@ -102,19 +110,6 @@ def make_file_editor(
 
     if normalized_root is not None and description is DEFAULT_FILE_EDITOR_DESCRIPTION:
         description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
-
-    # Per-agent bounded LRU: `agent -> {path -> previous content}`. Keyed with a
-    # WeakKeyDictionary so a garbage-collected agent takes its undo state with
-    # it; two agents sharing this editor instance cannot see each other's
-    # snapshots.
-    undo_histories: WeakKeyDictionary[Any, OrderedDict[str, str]] = WeakKeyDictionary()
-
-    def _get_undo_history(agent: Any) -> OrderedDict[str, str]:
-        history = undo_histories.get(agent)
-        if history is None:
-            history = OrderedDict()
-            undo_histories[agent] = history
-        return history
 
     # Sandboxes already verified to contain `root`. WeakSet so a sandbox that
     # goes out of scope does not pin the cache entry.
@@ -169,40 +164,51 @@ def make_file_editor(
         active = sandbox if sandbox is not None else tool_context.agent.sandbox
         await _verify_root(active)
         resolved = _resolve_path(path, normalized_root)
-        undo_history = _get_undo_history(tool_context.agent)
 
-        if command == "view":
-            return await _handle_view(active, resolved, view_range, max_file_size)
-        if command == "create":
-            return await _handle_create(active, resolved, file_text, undo_history, max_file_size)
-        if command == "str_replace":
-            return await _handle_str_replace(
-                active,
-                resolved,
-                old_str,
-                new_str,
-                replace_all,
-                max_file_size,
-                undo_history,
-                max_undo_entries,
-                max_undo_bytes,
-            )
-        if command == "insert":
-            return await _handle_insert(
-                active,
-                resolved,
-                insert_line,
-                new_str,
-                max_file_size,
-                undo_history,
-                max_undo_entries,
-                max_undo_bytes,
-            )
-        if command == "find_line":
-            return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
-        if command == "undo_edit":
-            return await _handle_undo(active, resolved, undo_history)
-        raise ValueError(f"Unknown command: {command}")
+        # Only mutating commands touch undo history, so read-only paths skip
+        # the state load/save (which deep-copies and JSON-validates).
+        mutates_undo = command in _MUTATING_COMMANDS
+        state = tool_context.agent.state if mutates_undo else None
+        undo_history: dict[str, str] = state.get(undo_state_key) or {} if state is not None else {}
+
+        try:
+            if command == "view":
+                return await _handle_view(active, resolved, view_range, max_file_size)
+            if command == "create":
+                return await _handle_create(active, resolved, file_text, undo_history, max_file_size)
+            if command == "str_replace":
+                return await _handle_str_replace(
+                    active,
+                    resolved,
+                    old_str,
+                    new_str,
+                    replace_all,
+                    max_file_size,
+                    undo_history,
+                    max_undo_entries,
+                    max_undo_bytes,
+                )
+            if command == "insert":
+                return await _handle_insert(
+                    active,
+                    resolved,
+                    insert_line,
+                    new_str,
+                    max_file_size,
+                    undo_history,
+                    max_undo_entries,
+                    max_undo_bytes,
+                )
+            if command == "find_line":
+                return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
+            if command == "undo_edit":
+                return await _handle_undo(active, resolved, undo_history)
+            raise ValueError(f"Unknown command: {command}")
+        finally:
+            if state is not None:
+                # Handlers only mutate after a successful sandbox write, so
+                # persisting on the exception path is safe.
+                state.set(undo_state_key, undo_history)
 
     return file_editor_tool
 
@@ -463,7 +469,7 @@ def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) ->
 
 
 def _store_undo_snapshot(
-    undo_history: OrderedDict[str, str],
+    undo_history: dict[str, str],
     file_path: str,
     content: str,
     max_entries: int,
@@ -483,7 +489,8 @@ def _store_undo_snapshot(
     undo_history[file_path] = content
     total_bytes = sum(len(v.encode("utf-8")) for v in undo_history.values())
     while undo_history and (len(undo_history) > max_entries or total_bytes > max_bytes):
-        _, evicted = undo_history.popitem(last=False)
+        oldest_key = next(iter(undo_history))
+        evicted = undo_history.pop(oldest_key)
         total_bytes -= len(evicted.encode("utf-8"))
 
 
@@ -589,7 +596,7 @@ async def _handle_create(
     sandbox: Sandbox,
     file_path: str,
     file_text: str | None,
-    undo_history: OrderedDict[str, str],
+    undo_history: dict[str, str],
     max_size: int,
 ) -> str:
     """Handle the ``create`` command: write a new file, refusing to overwrite."""
@@ -616,7 +623,7 @@ async def _handle_str_replace(
     new_str: str | None,
     replace_all: bool,
     max_size: int,
-    undo_history: OrderedDict[str, str],
+    undo_history: dict[str, str],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -658,7 +665,7 @@ async def _handle_insert(
     insert_line: int | None,
     new_str: str | None,
     max_size: int,
-    undo_history: OrderedDict[str, str],
+    undo_history: dict[str, str],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -733,7 +740,7 @@ async def _handle_find_line(
     )
 
 
-async def _handle_undo(sandbox: Sandbox, file_path: str, undo_history: OrderedDict[str, str]) -> str:
+async def _handle_undo(sandbox: Sandbox, file_path: str, undo_history: dict[str, str]) -> str:
     """Handle the ``undo_edit`` command: restore the last in-memory snapshot for ``file_path``.
 
     The snapshot is unconditionally written back through the sandbox: if the

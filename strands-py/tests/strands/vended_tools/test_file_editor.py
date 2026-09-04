@@ -12,6 +12,7 @@ import sys
 
 import pytest
 
+from strands.agent.state import AgentState
 from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from strands.types.tools import ToolContext
 from strands.vended_tools.file_editor import file_editor, make_file_editor
@@ -21,14 +22,11 @@ pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX path sema
 
 
 class _FakeAgent:
-    """A minimal agent stand-in that supports weak references (unlike SimpleNamespace).
-
-    Per-agent state in the editor is stored in a ``WeakKeyDictionary`` keyed on
-    the agent instance, so tests must use an object that can be weakref'd.
-    """
+    """A minimal agent stand-in with a ``sandbox`` and ``state``."""
 
     def __init__(self, sandbox: NotASandboxLocalEnvironment | None = None) -> None:
         self.sandbox = sandbox or NotASandboxLocalEnvironment()
+        self.state = AgentState()
 
 
 def _tool_context(sandbox: NotASandboxLocalEnvironment | None = None) -> ToolContext:
@@ -757,6 +755,37 @@ class TestUndo:
         file_path = _write(tmp_path / "test.txt", "content\n")
         with pytest.raises(ValueError, match="No undo history"):
             await editor(command="undo_edit", path=file_path, tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_snapshot_survives_across_agent_state_roundtrip(self, tmp_path):
+        # Guards #3235: undo history lives in ``agent.state`` so a session
+        # manager can persist it. Simulate a rehydrated agent by copying the
+        # first agent's serialized state into a fresh one and confirm undo
+        # still restores the pre-edit content.
+        file_path = _write(tmp_path / "test.txt", "original\n")
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment())
+
+        first_agent = _FakeAgent()
+        first_ctx = ToolContext(
+            tool_use={"name": "file_editor", "toolUseId": "first", "input": {}},
+            agent=first_agent,
+            invocation_state={},
+        )
+        await editor(
+            command="str_replace", path=file_path, tool_context=first_ctx, old_str="original", new_str="edited"
+        )
+        serialized = first_agent.state.get()
+        assert serialized  # sanity: state was written
+
+        rehydrated = _FakeAgent()
+        rehydrated.state = AgentState(serialized)
+        rehydrated_ctx = ToolContext(
+            tool_use={"name": "file_editor", "toolUseId": "second", "input": {}},
+            agent=rehydrated,
+            invocation_state={},
+        )
+        await editor(command="undo_edit", path=file_path, tool_context=rehydrated_ctx)
+        assert (tmp_path / "test.txt").read_text() == "original\n"
 
     @pytest.mark.asyncio
     async def test_undo_is_scoped_per_agent_within_one_editor(self, tmp_path):
