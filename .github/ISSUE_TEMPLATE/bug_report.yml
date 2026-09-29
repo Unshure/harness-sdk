@@ -13,7 +13,7 @@ body:
     attributes:
       label: Human Overview
       description: |
-        If an AI agent drafted this issue, a human must give a short overview here in their own words. See team/AI_USAGE_POLICY.md. (50 words)
+        If an AI agent drafted this issue, a human must give a short overview here in their own words. An AI agent MUST NOT fill out this section. See team/AI_USAGE_POLICY.md. (50 words)
       placeholder: In my own words, this bug...
   - type: checkboxes
     id: "checks"
