@@ -6,7 +6,7 @@
 
 Give tools a public, first-class way to say "stop the agent loop", with an optional way to do so after the current tool batch finishes. This will ultimately deprecate all of the other mechanisms to stopping the agent loop, and be the unified way of doing so going forward.
 
-The `stop` experimental tool is the immediate consumer, but the mechanism generalizes to any custom "done" / "finish" tool/hook/plugin.
+The `stop` experimental tool is the immediate consumer, but the mechanism generalizes to any custom tool/hook/plugin.
 
 ## Problem
 
@@ -27,9 +27,9 @@ Two termination primitives ship today:
 
 ## Proposal
 
-### Recommended: `after_current_tools` option on `cancel()`
+### Recommended: Consolidate agent loop stopping on `cancel()`
 
-Add an optional flag to `agent.cancel()` that defers the cancellation until the current tool batch completes, plus an optional `message` argument that flows to the final `AgentResult` text.
+Add an optional flag `after_current_tools` to `agent.cancel()` that defers the cancellation until the current tool batch completes, plus an optional `message` argument that flows to the final `AgentResult` text. This will allow `agent.cancel()` to handle all of the existing use cases for stopping the agentic loop.
 
 ```python
 # Python
@@ -112,7 +112,5 @@ Sibling-tool behavior when the model requests `[save_file(...), stop("done")]` u
 **Migration.** The Python event loop check at `event_loop.py:842` (currently reads `request_state["stop_event_loop"]`) becomes a check of `agent._deferred_cancel` at the same location. The TypeScript post-batch path that today looks up `STOP_INVOCATION_STATE_KEY` on `invocationState` reads the equivalent agent field instead. In TypeScript, the post-batch check can either (a) directly build an `AgentResult` with `stopReason: 'cancelled'` and return, or (b) call `this.cancel(message)` to trip the abort controller and rely on the next iteration's `_throwIfCancelled` → `CancelledError` → catch. Option (a) avoids an extra round-trip and is preferred.
 
 **Composition.** If two tools in the same batch both call the deferred cancel, the last write wins for the message. That policy matches how `invocationState` markers behave today and keeps the mental model simple; a first-wins policy would need the field to be written-once, which is only meaningful if the SDK ever runs tool batches in parallel.
-
-**Willingness to implement.** Yes. The change is localized to the agent class, the two event-loop post-batch checkpoints, and the stop tool itself. Tests simplify to "verify `cancel()` is called with the right arguments."
 
 </details>
