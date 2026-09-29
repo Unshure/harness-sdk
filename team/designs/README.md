@@ -33,11 +33,11 @@ Add a new file to `designs/NNNN-feature-name.md` using the template below, and c
 
 ## Overview
 
-> (Optional) Give a brief introduction to the proposed feature being introduced. (100 words)
+> (Optional) Give a brief introduction to the proposed feature being introduced. (150 words)
 
 ## Problem
 
-> In a few sentences, what is the issue motivating this change? Extended background belongs in Additional Details. (150 words)
+> In a few sentences, what is the issue motivating this change? Extended background belongs in Additional Details. (200 words) 
 >
 > - What task are you trying to accomplish?
 > - What makes it difficult or impossible today?
@@ -45,8 +45,8 @@ Add a new file to `designs/NNNN-feature-name.md` using the template below, and c
 
 ### Current State
 
-> Now show *how* it's hard. Ground the reader in the existing system — how it works today and exactly where it falls short — before proposing to change it. (125 words)
->
+> Now show *how* it's hard. Ground the reader in the existing system — how it works today and exactly where it falls short — before proposing to change it. (200 words)
+> 
 > - How is this handled now — the current API, flow, or workaround?
 > - What concretely breaks, and where? Use examples, error messages, or numbers where you can.
 > - What are the paper cuts — the small, recurring frictions that add up — not just the outright failures?
@@ -58,7 +58,7 @@ Add a new file to `designs/NNNN-feature-name.md` using the template below, and c
 
 ### Recommended: [name]
 
-> Describe the recommended option: what changes, how it integrates, and its tradeoffs. Prose plus pros/cons; code blocks don't count toward the limit. (250 words)
+> Describe the recommended option: what changes, how it integrates, and its tradeoffs. (300 words)
 
 **Pros:**
 
@@ -66,7 +66,7 @@ Add a new file to `designs/NNNN-feature-name.md` using the template below, and c
 
 ### Alternative: [name]
 
-> Describe each alternative on equal footing with the recommended option. (100 words per alternative)
+> Describe each alternative on equal footing with the recommended option. (300 words)
 
 - **Pros:**
 
@@ -76,7 +76,7 @@ Add a new file to `designs/NNNN-feature-name.md` using the template below, and c
 
 ## Developer Experience
 
-> Show what the developer experience looks like for the recommended option. Prose only; code blocks don't count toward the limit. (100 words)
+> Show what the developer experience looks like for the recommended option. (200 words)
 
 > - Code examples showing typical usage
 > - Configuration or setup required
@@ -84,7 +84,7 @@ Add a new file to `designs/NNNN-feature-name.md` using the template below, and c
 
 ## Additional Details
 
-> (Optional) Use for extended context that doesn't fit above: deep-dive investigations, longer prior-art surveys, or supplementary diagrams. Wrap it in a `<details>` block so the design stays scannable by default. (250 words)
+> (Optional) Use for extended context that doesn't fit above: deep-dive investigations, longer prior-art surveys, or supplementary diagrams. Wrap it in a `<details>` block so the design stays scannable by default.
 
 <details>
 <summary>Extended context (optional)</summary>
