@@ -1,5 +1,5 @@
 ## Human Overview
-<!-- If an AI agent drafted this PR, a human must give a short overview here in their own words.
+<!-- If an AI agent drafted this PR, a human must give a short overview here in their own words. An AI agent MUST NOT fill out this section.
      See team/AI_USAGE_POLICY.md. (50 words) -->
 
 ## Description
