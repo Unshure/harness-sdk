@@ -43,15 +43,11 @@ Skip the design process for bug fixes, small improvements, documentation updates
 
 ## Human Overview
 
-*Aim for ~100 words or fewer.*
-
-If an AI agent drafted this design, a human must give a short overview here in their own words. Please keep the summary brief and focused. See [AI_USAGE_POLICY.md](../AI_USAGE_POLICY.md).
+If an AI agent drafted this design, a human must give a short overview here in their own words. Please keep the summary brief and focused. See [AI_USAGE_POLICY.md](../AI_USAGE_POLICY.md). (100 words)
 
 ## Problem
 
-*Aim for ~200 words or fewer. Extended background belongs in Additional Details.*
-
-In a few sentences, what is the issue motivating this change?
+In a few sentences, what is the issue motivating this change? Extended background belongs in Additional Details. (200 words)
 
 - What task are you trying to accomplish?
 - What makes it difficult or impossible today?
@@ -59,9 +55,7 @@ In a few sentences, what is the issue motivating this change?
 
 ### Current State
 
-*Aim for ~250 words or fewer.*
-
-Now show *how* it's hard. Ground the reader in the existing system — how it works today and exactly where it falls short — before proposing to change it.
+Now show *how* it's hard. Ground the reader in the existing system — how it works today and exactly where it falls short — before proposing to change it. (250 words)
 
 - How is this handled now — the current API, flow, or workaround?
 - What concretely breaks, and where? Use examples, error messages, or numbers where you can.
@@ -70,7 +64,7 @@ Now show *how* it's hard. Ground the reader in the existing system — how it wo
 
 ## Goals
 
-*Aim for ~150 words or fewer.*
+State the user outcomes, opportunities, and constraints the solution must satisfy. (150 words)
 
 - What are the user outcomes?
 - What future opportunities might be unlocked?
@@ -79,7 +73,7 @@ Now show *how* it's hard. Ground the reader in the existing system — how it wo
 
 ## Key Decisions
 
-*Aim for ~200 words or fewer.*
+Call out the decisions and assumptions the team needs to align on. (200 words)
 
 1. What key decisions in the past are relevant to this topic?
 2. What assumptions/invariants/risks does the proposed solution include?
@@ -92,9 +86,7 @@ What are we proposing, and what else did we weigh? List the options on equal foo
 
 ### Recommended: [name]
 
-*Aim for ~400 words or fewer.*
-
-What the change is:
+Describe the recommended option: what changes, how it integrates, and its tradeoffs. (400 words)
 
 - Changes to the API (with code examples)
 - How it integrates with existing features
@@ -106,7 +98,7 @@ What the change is:
 
 ### Alternative: [name]
 
-*Aim for ~200 words or fewer per alternative.*
+Describe each alternative on equal footing with the recommended option. (200 words per alternative)
 
 - What this option would look like
 - **Pros:** ...
@@ -117,9 +109,7 @@ What the change is:
 
 ## Developer Experience
 
-*Aim for ~200 words or fewer.*
-
-Show what the developer experience looks like for the recommended option:
+Show what the developer experience looks like for the recommended option. (200 words)
 
 - Code examples showing typical usage
 - Configuration or setup required
@@ -127,9 +117,7 @@ Show what the developer experience looks like for the recommended option:
 
 ## Consequences
 
-*Aim for ~150 words or fewer.*
-
-What becomes easier or more difficult to do because of this change?
+What becomes easier or more difficult to do because of this change? (150 words)
 
 ## Willingness to Implement
 

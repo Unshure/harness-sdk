@@ -8,6 +8,13 @@ body:
     attributes:
       value: |
         Thanks for suggesting a new feature for Strands Agents SDK!
+  - type: textarea
+    id: human-overview
+    attributes:
+      label: Human Overview
+      description: |
+        If an AI agent drafted this request, a human must give a short overview here in their own words. See team/AI_USAGE_POLICY.md. (50 words)
+      placeholder: In my own words, I want...
   - type: dropdown
     id: sdk-language
     attributes:
@@ -23,7 +30,7 @@ body:
     id: problem-statement
     attributes:
       label: Problem Statement
-      description: Describe the problem you're trying to solve. What is currently difficult or impossible to do? Aim for ~100 words or fewer.
+      description: Describe the problem you're trying to solve. What is currently difficult or impossible to do? (100 words)
       placeholder: I would like Strands to...
     validations:
       required: true
@@ -31,12 +38,12 @@ body:
     id: proposed-solution
     attributes:
       label: Proposed Solution
-      description: Optional - Describe your proposed solution. How would this feature work? Aim for ~150 words or fewer.
+      description: Optional - Describe your proposed solution. How would this feature work? (150 words)
   - type: textarea
     id: use-case
     attributes:
       label: Use Case
-      description: Provide specific use cases for the feature. How would people use it? Aim for ~100 words or fewer.
+      description: Provide specific use cases for the feature. How would people use it? (100 words)
       placeholder: This would help with...
     validations:
       required: true
@@ -44,14 +51,7 @@ body:
     id: alternatives-solutions
     attributes:
       label: Alternatives Solutions
-      description: Optional - Have you considered alternative approaches? What are their pros and cons? Aim for ~100 words or fewer.
-  - type: textarea
-    id: human-overview
-    attributes:
-      label: Human Overview
-      description: |
-        If an AI agent drafted this request, a human must give a short overview here in their own words. Aim for ~50 words or fewer. See team/AI_USAGE_POLICY.md.
-      placeholder: In my own words, I want...
+      description: Optional - Have you considered alternative approaches? What are their pros and cons? (100 words)
   - type: textarea
     id: additional-context
     attributes:
