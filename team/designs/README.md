@@ -43,9 +43,13 @@ Skip the design process for bug fixes, small improvements, documentation updates
 
 ## Human Overview
 
-If an AI agent drafted any part of this design, a human must give a short overview here in their own words: what the design is, why this approach, and the tradeoffs they own. This is the human's summary — not an AI-written recap. See [AI_USAGE_POLICY.md](../AI_USAGE_POLICY.md).
+*Aim for ~100 words or fewer.*
+
+If an AI agent drafted this design, a human must give a short overview here in their own words. Please keep the summary brief and focused. See [AI_USAGE_POLICY.md](../AI_USAGE_POLICY.md).
 
 ## Problem
+
+*Aim for ~200 words or fewer. Extended background belongs in Additional Details.*
 
 In a few sentences, what is the issue motivating this change?
 
@@ -54,6 +58,8 @@ In a few sentences, what is the issue motivating this change?
 - Who experiences this problem?
 
 ### Current State
+
+*Aim for ~250 words or fewer.*
 
 Now show *how* it's hard. Ground the reader in the existing system — how it works today and exactly where it falls short — before proposing to change it.
 
@@ -64,12 +70,16 @@ Now show *how* it's hard. Ground the reader in the existing system — how it wo
 
 ## Goals
 
+*Aim for ~150 words or fewer.*
+
 - What are the user outcomes?
 - What future opportunities might be unlocked?
 - What does a good solution need to do?
 - What constraints does it operate under?
 
 ## Key Decisions
+
+*Aim for ~200 words or fewer.*
 
 1. What key decisions in the past are relevant to this topic?
 2. What assumptions/invariants/risks does the proposed solution include?
@@ -81,6 +91,8 @@ Now show *how* it's hard. Ground the reader in the existing system — how it wo
 What are we proposing, and what else did we weigh? List the options on equal footing with their pros and cons, recommended one first, so the reader can see the choice was made by weighing tradeoffs rather than asserted.
 
 ### Recommended: [name]
+
+*Aim for ~400 words or fewer.*
 
 What the change is:
 
@@ -94,6 +106,8 @@ What the change is:
 
 ### Alternative: [name]
 
+*Aim for ~200 words or fewer per alternative.*
+
 - What this option would look like
 - **Pros:** ...
 - **Cons:** ...
@@ -103,6 +117,8 @@ What the change is:
 
 ## Developer Experience
 
+*Aim for ~200 words or fewer.*
+
 Show what the developer experience looks like for the recommended option:
 
 - Code examples showing typical usage
@@ -111,6 +127,8 @@ Show what the developer experience looks like for the recommended option:
 
 ## Consequences
 
+*Aim for ~150 words or fewer.*
+
 What becomes easier or more difficult to do because of this change?
 
 ## Willingness to Implement
@@ -118,6 +136,17 @@ What becomes easier or more difficult to do because of this change?
 Are you willing to implement this if approved?
 
 Yes / No / Maybe with guidance
+
+## Additional Details
+
+*Optional. Use for extended context that doesn't fit above: deep-dive investigations, longer prior-art surveys, or supplementary diagrams. Wrap it in a `<details>` block so the design stays scannable by default.*
+
+<details>
+<summary>Extended context (optional)</summary>
+
+<!-- Extended content here -->
+
+</details>
 ```
 
 ## Writing the document

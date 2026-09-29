@@ -23,7 +23,7 @@ body:
     id: problem-statement
     attributes:
       label: Problem Statement
-      description: Describe the problem you're trying to solve. What is currently difficult or impossible to do?
+      description: Describe the problem you're trying to solve. What is currently difficult or impossible to do? Aim for ~100 words or fewer.
       placeholder: I would like Strands to...
     validations:
       required: true
@@ -31,12 +31,12 @@ body:
     id: proposed-solution
     attributes:
       label: Proposed Solution
-      description: Optional - Describe your proposed solution in detail. How would this feature work?
+      description: Optional - Describe your proposed solution. How would this feature work? Aim for ~150 words or fewer.
   - type: textarea
     id: use-case
     attributes:
       label: Use Case
-      description: Provide specific use cases for the feature. How would people use it?
+      description: Provide specific use cases for the feature. How would people use it? Aim for ~100 words or fewer.
       placeholder: This would help with...
     validations:
       required: true
@@ -44,18 +44,25 @@ body:
     id: alternatives-solutions
     attributes:
       label: Alternatives Solutions
-      description: Optional - Have you considered alternative approaches? What are their pros and cons?
+      description: Optional - Have you considered alternative approaches? What are their pros and cons? Aim for ~100 words or fewer.
   - type: textarea
     id: human-overview
     attributes:
       label: Human Overview
       description: |
-        If an AI agent drafted any part of this request, a human must give a short overview here in their own words:
-        what you want, why it matters to you, and anything a maintainer should know that the AI-generated content doesn't say.
-        This is the human's summary — not an AI-written recap. See team/AI_USAGE_POLICY.md.
+        If an AI agent drafted this request, a human must give a short overview here in their own words. Aim for ~50 words or fewer. See team/AI_USAGE_POLICY.md.
       placeholder: In my own words, I want...
   - type: textarea
     id: additional-context
     attributes:
       label: Additional Context
-      description: Include any other context, screenshots, code examples, or references that might help understand the feature request.
+      description: |
+        Optional. Extended context that doesn't fit above: screenshots, code examples, references, or supplementary background.
+        Wrap it in a <details> block so the issue stays scannable by default.
+      placeholder: |
+        <details>
+        <summary>Extended context (optional)</summary>
+
+        <!-- Extended content here -->
+
+        </details>

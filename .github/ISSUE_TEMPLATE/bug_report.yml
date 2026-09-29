@@ -71,7 +71,7 @@ body:
     id: steps-to-reproduce
     attributes:
       label: Steps to Reproduce
-      description: Detailed steps to reproduce the behavior
+      description: Detailed steps to reproduce the behavior. Aim for ~200 words or fewer; put longer logs or traces in Additional Context.
       placeholder: |
         1. Code Snippet (Minimal reproducible example)
         2. Install Strands using...
@@ -83,14 +83,14 @@ body:
     id: expected-behavior
     attributes:
       label: Expected Behavior
-      description: A clear description of what you expected to happen
+      description: A clear description of what you expected to happen. Aim for ~50 words or fewer.
     validations:
       required: true
   - type: textarea
     id: actual-behavior
     attributes:
       label: Actual Behavior
-      description: What actually happened
+      description: What actually happened. Aim for ~100 words or fewer; put longer logs or traces in Additional Context.
     validations:
       required: true
   - type: textarea
@@ -98,20 +98,27 @@ body:
     attributes:
       label: Human Overview
       description: |
-        If an AI agent drafted any part of this issue, a human must give a short overview here in their own words:
-        what the bug is, why it matters, and anything a maintainer should know that the AI-generated content doesn't say.
-        This is the human's summary — not an AI-written recap. See team/AI_USAGE_POLICY.md.
+        If an AI agent drafted this issue, a human must give a short overview here in their own words. Aim for ~50 words or fewer. See team/AI_USAGE_POLICY.md.
       placeholder: In my own words, this bug...
-  - type: textarea
-    id: additional-context
-    attributes:
-      label: Additional Context
-      description: Any other relevant information, logs, screenshots, etc.
   - type: textarea
     id: possible-solution
     attributes:
       label: Possible Solution
-      description: Optional - If you have suggestions on how to fix the bug
+      description: Optional - If you have suggestions on how to fix the bug. Aim for ~100 words or fewer.
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: |
+        Optional. Extended context that doesn't fit above: longer logs, screenshots, or supplementary background.
+        Wrap it in a <details> block so the issue stays scannable by default.
+      placeholder: |
+        <details>
+        <summary>Extended context (optional)</summary>
+
+        <!-- Extended content here -->
+
+        </details>
   - type: input
     id: related-issues
     attributes:

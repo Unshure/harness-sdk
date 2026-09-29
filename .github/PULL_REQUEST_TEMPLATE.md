@@ -1,10 +1,10 @@
 ## Description
-<!-- Provide a detailed description of the changes in this PR -->
+<!-- Describe the changes in this PR. Aim for ~150 words or fewer.
+     Longer background belongs in the Additional Details section below. -->
 
 ## Human Overview
-<!-- If an AI agent drafted any part of this PR, a human must give a short overview of the change here in their own words:
-     what it does, why this approach, and anything a reviewer should know that the diff alone doesn't say.
-     This is the human's summary — not an AI-written recap. See team/AI_USAGE_POLICY.md. -->
+<!-- If an AI agent drafted this PR, a human must give a short overview here in their own words.
+     Aim for ~50 words or fewer. See team/AI_USAGE_POLICY.md. -->
 
 ## Related Issues
 
@@ -26,9 +26,23 @@ Other (please describe):
 
 ## Testing
 
-How have you tested the change? Verify that the changes do not break functionality or introduce new warnings.
+<!-- How have you tested the change? Aim for ~100 words or fewer.
+     Verify that the changes do not break functionality or introduce new warnings. -->
 
 - [ ] I ran `hatch run prepare`
+
+## Additional Details
+
+<!-- Optional. Use this section for extended context that doesn't fit above:
+     longer logs, deep-dive reasoning, extended test output, supplementary background.
+     Wrap it in a <details> block so the PR stays scannable by default. -->
+
+<details>
+<summary>Extended context (optional)</summary>
+
+<!-- Extended content here -->
+
+</details>
 
 ## Checklist
 - [ ] I have read the CONTRIBUTING document
