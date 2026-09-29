@@ -46,6 +46,15 @@ body:
       label: Alternatives Solutions
       description: Optional - Have you considered alternative approaches? What are their pros and cons?
   - type: textarea
+    id: human-overview
+    attributes:
+      label: Human Overview
+      description: |
+        If an AI agent drafted any part of this request, a human must give a short overview here in their own words:
+        what you want, why it matters to you, and anything a maintainer should know that the AI-generated content doesn't say.
+        This is the human's summary — not an AI-written recap. See team/AI_USAGE_POLICY.md.
+      placeholder: In my own words, I want...
+  - type: textarea
     id: additional-context
     attributes:
       label: Additional Context

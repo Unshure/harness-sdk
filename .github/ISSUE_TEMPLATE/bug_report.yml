@@ -94,6 +94,15 @@ body:
     validations:
       required: true
   - type: textarea
+    id: human-overview
+    attributes:
+      label: Human Overview
+      description: |
+        If an AI agent drafted any part of this issue, a human must give a short overview here in their own words:
+        what the bug is, why it matters, and anything a maintainer should know that the AI-generated content doesn't say.
+        This is the human's summary — not an AI-written recap. See team/AI_USAGE_POLICY.md.
+      placeholder: In my own words, this bug...
+  - type: textarea
     id: additional-context
     attributes:
       label: Additional Context

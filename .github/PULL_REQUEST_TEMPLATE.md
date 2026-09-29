@@ -1,6 +1,11 @@
 ## Description
 <!-- Provide a detailed description of the changes in this PR -->
 
+## Human Overview
+<!-- If an AI agent drafted any part of this PR, a human must give a short overview of the change here in their own words:
+     what it does, why this approach, and anything a reviewer should know that the diff alone doesn't say.
+     This is the human's summary — not an AI-written recap. See team/AI_USAGE_POLICY.md. -->
+
 ## Related Issues
 
 <!-- Link to related issues using #issue-number format -->

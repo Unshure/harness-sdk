@@ -41,6 +41,10 @@ Skip the design process for bug fixes, small improvements, documentation updates
 
 **Issue**: Issue Link
 
+## Human Overview
+
+If an AI agent drafted any part of this design, a human must give a short overview here in their own words: what the design is, why this approach, and the tradeoffs they own. This is the human's summary — not an AI-written recap. See [AI_USAGE_POLICY.md](../AI_USAGE_POLICY.md).
+
 ## Problem
 
 In a few sentences, what is the issue motivating this change?
