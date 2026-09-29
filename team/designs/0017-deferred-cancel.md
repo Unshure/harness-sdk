@@ -1,170 +1,83 @@
 # Deferred Cancellation
 
-**Status**: Proposed
-
 **Date**: 2026-07-27
 
-**Issue**: TBD
+## Overview
+
+Give tools a public, first-class way to say "stop the agent loop after the current batch finishes" without touching internal `invocationState` flags. The `stop` experimental tool is the immediate consumer, but the mechanism generalizes to any custom "done" / "finish" tool. The proposed shape is an optional `after_current_tools` / `afterCurrentTools` flag on the existing `agent.cancel()` method, plus a `message` parameter that surfaces as the final assistant text.
 
 ## Problem
 
-The SDK needs a mechanism for tools to signal that the agent loop should stop after the current tool batch completes. The `stop` experimental tool is the primary consumer: it allows a model to gracefully end the loop with an optional final message. The question is how to implement this without introducing a one-off flag that only one tool uses, while preserving cooperative semantics (sibling tools in the same batch run to completion).
+The SDK needs a way for a tool to signal "end the loop gracefully after this batch." The experimental `stop` tool is the primary consumer today; user-authored "finish" tools are the natural next step. Neither of the two existing termination primitives fits:
+
+- `agent.cancel()` is an immediate abort — sibling tools in the same batch get error results, and the loop exits at the next pre-tool checkpoint.
+- The `stop_event_loop` flag (Python) and `AfterToolsEvent.endTurn` marker (TypeScript) are cooperative but live in `invocationState`, an untyped shared bag. Tools that want cooperative stop have to reverse-engineer undocumented internal keys.
+
+This affects anyone building agents that need graceful termination from inside a tool call.
 
 ### Current State
 
-There are two termination primitives in the SDK today:
+Two termination primitives ship today:
 
-1. **`agent.cancel()`** — an immediate abort signal. Sets a flag (Python `threading.Event` / TypeScript `AbortController`) that the event loop checks at multiple points:
-   - Before tool execution (per-tool in sequential executor)
-   - During model streaming
-   - After tool execution, before the next model call
+1. **`agent.cancel()`** — sets a flag (Python `threading.Event`, TS `AbortController`). Checked before tool execution, during model streaming, and between iterations. Pending tools in the batch receive "Tool execution cancelled" errors; the loop exits with `stopReason: 'cancelled'`. Designed for external callers (timeouts, disconnects).
 
-   When triggered, pending tools in the batch receive error results ("Tool execution cancelled") and the loop exits with `stopReason: 'cancelled'`. This is designed for external callers (timeouts, user-initiated abort, web request disconnects).
+2. **`invocation_state` flags** — the `stop` tool writes `request_state["stop_event_loop"] = True` (Python) or `invocationState[STOP_INVOCATION_STATE_KEY] = marker` (TypeScript). The event loop checks these only after the full batch completes, so siblings finish normally.
 
-2. **`invocation_state` flags** — the `stop_event_loop` flag (Python) and `AfterToolsEvent.endTurn` marker (TypeScript) are checked only after the entire tool batch completes. They provide cooperative semantics: all tools finish, then the loop exits. However, they require tools to write to `invocationState` (a mutable shared bag) and the event loop to check a one-off key.
+Paper cuts with the flag approach:
 
-Neither is right for a tool-initiated graceful stop:
-
-- `cancel()` is too aggressive — it aborts sibling tools mid-batch and uses pre-tool-execution checkpoints that break cooperative guarantees.
-- `invocationState` flags work cooperatively but are ad-hoc internal machinery that the `stop` tool shouldn't depend on. They couple the tool to undocumented event loop internals and don't compose (what if two tools both want to signal "stop after this batch"?).
-
-### Paper cuts
-
-- **`stop_event_loop` / `STOP_INVOCATION_STATE_KEY` are undocumented internal state.** They only exist to serve the stop tool but live in the general-purpose `invocationState` bag, polluting it. TypeScript additionally needed a `WeakSet`-tracked hook installation pattern to bridge from `invocationState` to `endTurn`.
-- **No way for a tool to say "stop after the batch" without touching internals.** A user writing a custom "done" tool must reverse-engineer the same flag pattern.
-- **`cancel()` lacks gradation.** It's all-or-nothing — there's no way to cancel cooperatively through the public API.
-
-## Goals and Non-Goals
-
-**Goals:**
-- A single public API for tool-initiated graceful stop: `agent.cancel(message, { afterCurrentTools: true })`
-- Cooperative semantics: sibling tools in the same batch run to completion
-- The cancel message flows through to the `AgentResult` as the final assistant text
-- Cross-SDK parity (Python and TypeScript)
-- Remove the need for `stop_event_loop` / `STOP_INVOCATION_STATE_KEY` internal flags
-- Composable: multiple tools calling deferred cancel in the same batch produces one stop (last message wins, or first — pick a policy)
-
-**Non-Goals:**
-- Changing the behavior of immediate `cancel()` (no deferred flag) — it stays an aggressive abort
-- Providing a way to "un-cancel" a deferred cancel from another tool in the same batch
-- Cancellation with custom `stopReason` values (it remains `'cancelled'`)
+- **Undocumented internal contract.** `stop_event_loop` and `STOP_INVOCATION_STATE_KEY` exist only to serve one tool but live in a general-purpose bag.
+- **TypeScript needs a `WeakSet`-tracked `AfterToolsEvent` hook** to bridge from `invocationState` to `endTurn` — complex plumbing for "set a flag, loop stops."
+- **Not composable or discoverable.** Anyone writing a custom stop tool must copy the same internal pattern.
+- **`cancel()` has no gradation.** There is no public API for cooperative cancellation.
 
 ## Proposal
 
-### Recommended: `afterCurrentTools` option on `cancel()`
+### Recommended: `after_current_tools` option on `cancel()`
 
-Add an optional second parameter to `agent.cancel()` that defers the cancellation until after the current tool batch completes.
-
-#### Python
-
-```python
-def cancel(self, message: str | None = None, *, after_current_tools: bool = False) -> None:
-```
-
-When `after_current_tools=True`:
-- Stores `message` in `self._deferred_cancel_message: str | None`
-- Sets `self._deferred_cancel: bool = True`
-- Does **not** set `self._cancel_signal`
-
-The event loop checks `agent._deferred_cancel` at the post-batch point (where `stop_event_loop` is currently checked). When found:
-- Clears `_deferred_cancel`
-- Calls `self.cancel(self._deferred_cancel_message)` to set the immediate signal
-- The existing `_cancel_signal.is_set()` check (immediately after) fires and exits with `stopReason: 'cancelled'`
-
-When `after_current_tools=False` (default, the current behavior):
-- Sets `_cancel_signal` immediately as today
-- Stores the message for use in cancellation text
-
-#### TypeScript
-
-```typescript
-public cancel(message?: string, options?: { afterCurrentTools?: boolean }): void
-```
-
-When `afterCurrentTools: true`:
-- Stores the message in `private _deferredCancelMessage: string | undefined`
-- Sets `private _deferredCancel = true`
-- Does **not** abort the `AbortController`
-
-The agent loop checks `this._deferredCancel` after the `AfterToolsEvent` fires (the same position where `endTurn` is currently checked). When found:
-- Clears `_deferredCancel`
-- Calls `this.cancel(this._deferredCancelMessage)` to abort immediately
-- The next loop iteration's `_throwIfCancelled()` fires and the `CancelledError` catch block produces the result with `stopReason: 'cancelled'`
-
-Actually, a simpler path for TypeScript: at the post-batch check, directly build the `AgentResult` with `stopReason: 'cancelled'` and return (mirroring what the `endTurn` path does today but with `'cancelled'` instead of `'endTurn'`). This avoids a round-trip through abort → next-cycle → throw → catch.
-
-#### Stop tool usage
+Add an optional flag to `agent.cancel()` that defers the cancellation until the current tool batch completes, plus an optional `message` argument that flows to the final `AgentResult` text.
 
 ```python
 # Python
-async def stop_tool(tool_context: ToolContext, message: str | None = None) -> str:
-    final_message = _validate_message(message, max_message_length)
-    tool_context.agent.cancel(final_message, after_current_tools=True)
-    return final_message
+def cancel(self, message: str | None = None, *, after_current_tools: bool = False) -> None:
 ```
 
 ```typescript
 // TypeScript
-callback: (input, context) => {
-  const message = input.message ?? DEFAULT_STOP_MESSAGE
-  context.agent.cancel(message, { afterCurrentTools: true })
-  return message
-}
+public cancel(message?: string, options?: { afterCurrentTools?: boolean }): void
 ```
 
-**Pros:**
-- Single public API surface — tools call `cancel()` with an option, no internal flags
-- Cooperative semantics preserved: sibling tools complete normally
-- Composable with existing cancel infrastructure (the deferred cancel eventually becomes an immediate cancel)
-- Clean separation: the `cancel()` method owns all cancellation state, not `invocationState`
-- Easily discoverable: autocomplete on `cancel()` shows the option
+When the deferred flag is set, the agent stores the message and a `_deferred_cancel` bit, but does **not** trip the cancel signal / abort controller. The event loop's existing post-batch checkpoint (where `stop_event_loop` / `endTurn` are read today) checks `_deferred_cancel` instead, then falls through to the normal cancel path so termination produces `stopReason: 'cancelled'` with the stored message. When the flag is unset, `cancel()` behaves exactly as today.
 
-**Cons:**
-- Adds complexity to `cancel()` — it now has two modes
-- The deferred state (`_deferredCancel` + `_deferredCancelMessage`) is additional agent-level mutable state
-- The event loop still needs a check at the post-batch point (just checking a different field)
-- `afterCurrentTools` is only meaningful during tool execution — calling it outside that context silently behaves like immediate cancel on the next invocation
-
-### Alternative: Dedicated `stopAfterTools()` method
-
-Instead of overloading `cancel()`, add a separate method:
-
-```python
-def stop_after_tools(self, message: str | None = None) -> None:
-```
-
-```typescript
-public stopAfterTools(message?: string): void
-```
+The `stop` tool becomes a one-liner: `tool_context.agent.cancel(message, after_current_tools=True)`. The `stop_event_loop` / `STOP_INVOCATION_STATE_KEY` internal contracts are deleted, along with the TypeScript `WeakSet` + `AfterToolsEvent` hook.
 
 **Pros:**
-- Clear separation of intent — `cancel()` is always immediate, `stopAfterTools()` is always deferred
-- No confusion about what `cancel()` does
+- Single public API for cancellation, with an option for the cooperative variant — discoverable via autocomplete.
+- Cooperative semantics preserved: sibling tools in the batch complete normally.
+- Cancel state lives on the agent, not in an untyped `invocationState` bag.
+- Simplifies the TypeScript stop tool substantially (no hook installation, no marker tracking).
 
 **Cons:**
-- Two public methods for conceptually related behavior (both terminate the loop)
-- Users must discover a second method rather than seeing options on the one they already know
-- Harder to explain when to use which — "cancel is for external, stopAfterTools is for tools" is a leaky abstraction since either could be called from anywhere
-- Adds to `LocalAgent` interface surface area
+- `cancel()` now has two modes, a small conceptual burden.
+- Adds two fields of agent state (`_deferred_cancel`, `_deferred_cancel_message`).
+- Calling with the flag outside of a tool execution context silently behaves like immediate cancel at the next post-batch check, which may confuse callers.
 
-### Alternative: Keep `invocationState` flags as an internal mechanism
+### Alternative: dedicated `stop_after_tools()` method
 
-Leave the current `stop_event_loop` / `AfterToolsEvent.endTurn` approach in place and accept it as internal plumbing.
+Add a separate method — `stop_after_tools(message)` / `stopAfterTools(message)` — instead of overloading `cancel()`.
 
-**Pros:**
-- Already works and is tested
-- No changes to the public `cancel()` API
-- Proven cooperative semantics
+- **Pros:** Clear separation of intent; `cancel()` keeps its "always immediate" meaning.
+- **Cons:** Two public methods for closely related behavior; users must discover a second name; "cancel is for external, stopAfterTools is for tools" is a leaky abstraction since either can be called from anywhere; grows the `LocalAgent` interface surface.
 
-**Cons:**
-- Undocumented internal contract — tools depend on specific `invocationState` keys
-- TypeScript needed a `WeakSet` + hook pattern to bridge the gap — complex for what should be "set flag, loop stops"
-- Not composable or discoverable — a user writing a custom stop tool must copy the same internal pattern
-- The `invocationState` bag becomes a dumping ground for control flow signals
+### Alternative: keep `invocationState` flags as internal plumbing
+
+Leave `stop_event_loop` / `AfterToolsEvent.endTurn` in place and treat them as private.
+
+- **Pros:** Already works and is tested; no public API change.
+- **Cons:** Undocumented contract that custom tools still can't reuse cleanly; the TypeScript `WeakSet` + hook bridge stays; the `invocationState` bag continues to accumulate control-flow signals.
 
 ## Developer Experience
 
-### Basic usage — stop tool
+Basic usage — the shipped `stop` tool:
 
 ```python
 from strands import Agent
@@ -176,7 +89,7 @@ result = await agent.invoke_async("Complete this task and stop when done.")
 # result.message contains the model's final assistant message
 ```
 
-### Custom stop tool
+Custom "finish" tool:
 
 ```python
 from strands.tools.decorator import tool
@@ -189,41 +102,23 @@ async def finish(tool_context: ToolContext, summary: str) -> str:
     return summary
 ```
 
-### External cancellation (unchanged)
+External cancellation (unchanged):
 
 ```python
-# Still immediate — no after_current_tools flag
-agent.cancel()  # or agent.cancel("Timeout reached")
+agent.cancel()  # immediate — no after_current_tools flag
 ```
 
-### Sibling tools complete
+Sibling-tool behavior when the model requests `[save_file(...), stop("done")]` under the sequential executor: `save_file` runs to completion, then `stop` calls `cancel(msg, after_current_tools=True)`, then the batch completes, then the deferred cancel fires and the loop exits with `stopReason: 'cancelled'`.
 
-```python
-# Model requests: [save_file(...), stop("All done")]
-# With sequential executor:
-#   1. save_file runs to completion ✓
-#   2. stop runs, calls cancel(msg, after_current_tools=True) ✓
-#   3. Batch completes, deferred cancel fires
-#   4. Loop exits with stopReason='cancelled'
-```
+## Additional Details
 
-## Consequences
+<details>
+<summary>Extended context (optional)</summary>
 
-**What becomes easier:**
-- Writing custom "done" / "stop" / "finish" tools — just call `cancel(msg, after_current_tools=True)`
-- Understanding the stop mechanism — it's one method with an option, not hidden flags
-- Maintaining the stop tool — no hook installation, no WeakSet tracking, no marker keys
+**Migration.** The Python event loop check at `event_loop.py:842` (currently reads `request_state["stop_event_loop"]`) becomes a check of `agent._deferred_cancel` at the same location. The TypeScript post-batch path that today looks up `STOP_INVOCATION_STATE_KEY` on `invocationState` reads the equivalent agent field instead. In TypeScript, the post-batch check can either (a) directly build an `AgentResult` with `stopReason: 'cancelled'` and return, or (b) call `this.cancel(message)` to trip the abort controller and rely on the next iteration's `_throwIfCancelled` → `CancelledError` → catch. Option (a) avoids an extra round-trip and is preferred.
 
-**What becomes harder or riskier:**
-- `cancel()` now has two modes, which adds a small conceptual burden
-- The deferred cancel state must be cleared correctly on invocation boundaries (same as today's flag, just on a different field)
-- If a tool calls `cancel(msg, after_current_tools=True)` outside of a tool execution context (e.g., in a hook), the deferred cancel just fires at the next post-batch check — which might be confusing if there are no tools running
+**Composition.** If two tools in the same batch both call the deferred cancel, the last write wins for the message. That policy matches how `invocationState` markers behave today and keeps the mental model simple; a first-wins policy would need the field to be written-once, which is only meaningful if the SDK ever runs tool batches in parallel.
 
-**Migration:**
-- The existing `stop_event_loop` check in Python can be replaced with a `_deferred_cancel` check at the same location
-- The TypeScript `endTurn` path can be replaced similarly
-- The stop tool's tests simplify to verifying that `cancel()` is called with the right arguments
+**Willingness to implement.** Yes. The change is localized to the agent class, the two event-loop post-batch checkpoints, and the stop tool itself. Tests simplify to "verify `cancel()` is called with the right arguments."
 
-## Willingness to Implement
-
-Yes — the implementation is straightforward and localized to the agent class, event loop post-batch checks, and the stop tool itself.
+</details>
