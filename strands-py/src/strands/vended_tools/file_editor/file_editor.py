@@ -15,7 +15,8 @@ from weakref import WeakSet
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
-from ...types.tools import ToolContext
+from ...types.media import DocumentFormat, ImageFormat
+from ...types.tools import ToolContext, ToolResult
 
 if TYPE_CHECKING:
     from ...sandbox.base import Sandbox
@@ -29,9 +30,30 @@ _MAX_FIND_LINE_HITS = 200
 _DEFAULT_MAX_UNDO_ENTRIES = 32
 _DEFAULT_MAX_UNDO_BYTES = 32 * _MB
 
+# Extension → Bedrock media format. Detection is by extension because the
+# sandbox seam exposes no MIME metadata. `csv`, `html`, `txt`, and `md` are
+# text-representable documents and stay on the numbered-lines path so
+# find_line and str_replace still work; only opaque binary documents route
+# through the ToolResult document block.
+_IMAGE_FORMATS: dict[str, ImageFormat] = {
+    "png": "png",
+    "jpg": "jpeg",
+    "jpeg": "jpeg",
+    "gif": "gif",
+    "webp": "webp",
+}
+_BINARY_DOCUMENT_FORMATS: dict[str, DocumentFormat] = {
+    "pdf": "pdf",
+    "doc": "doc",
+    "docx": "docx",
+    "xls": "xls",
+    "xlsx": "xlsx",
+}
+
 DEFAULT_FILE_EDITOR_DESCRIPTION = (
-    "Filesystem editor for viewing, creating, and editing files. Supports view (with "
-    "line ranges), create, str_replace (exact match; ambiguous matches must opt in via "
+    "Filesystem editor for viewing, creating, and editing files. Supports view (text with "
+    "line ranges; png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents returned as "
+    "media blocks), create, str_replace (exact match; ambiguous matches must opt in via "
     "replace_all), insert, find_line, and undo_edit. Files must use absolute paths."
 )
 
@@ -121,9 +143,7 @@ def make_file_editor(
         try:
             await active.list_files(normalized_root)
         except SandboxPathNotFoundError as error:
-            raise ValueError(
-                f"Invalid configuration: root {normalized_root} does not exist in the sandbox."
-            ) from error
+            raise ValueError(f"Invalid configuration: root {normalized_root} does not exist in the sandbox.") from error
         verified_sandboxes.add(active)
 
     @tool(name=name, description=description, context="tool_context")
@@ -139,7 +159,7 @@ def make_file_editor(
         search_text: str | None = None,
         fuzzy: bool = False,
         replace_all: bool = False,
-    ) -> str:
+    ) -> str | ToolResult:
         """Filesystem editor for viewing, creating, and editing files.
 
         Args:
@@ -173,7 +193,9 @@ def make_file_editor(
 
         try:
             if command == "view":
-                return await _handle_view(active, resolved, view_range, max_file_size)
+                return await _handle_view(
+                    active, resolved, view_range, max_file_size, tool_context.tool_use["toolUseId"]
+                )
             if command == "create":
                 return await _handle_create(active, resolved, file_text, undo_history, max_file_size)
             if command == "str_replace":
@@ -562,8 +584,14 @@ async def _list_directory(sandbox: Sandbox, dir_path: str) -> str:
 # ---- Sandbox-path handlers ----
 
 
-async def _handle_view(sandbox: Sandbox, file_path: str, view_range: list[int] | None, max_size: int) -> str:
-    """Handle the ``view`` command: render a file with line numbers or list a directory."""
+async def _handle_view(
+    sandbox: Sandbox,
+    file_path: str,
+    view_range: list[int] | None,
+    max_size: int,
+    tool_use_id: str,
+) -> str | ToolResult:
+    """Handle the ``view`` command: text file (numbered lines), directory (listing), or media (ToolResult)."""
     exists, is_dir = await _probe_sandbox_path(sandbox, file_path)
     if not exists:
         raise ValueError(f"The path {file_path} does not exist. Please provide a valid path.")
@@ -572,6 +600,34 @@ async def _handle_view(sandbox: Sandbox, file_path: str, view_range: list[int] |
         if view_range:
             raise ValueError("The `view_range` parameter is not allowed when `path` points to a directory.")
         return await _list_directory(sandbox, file_path)
+
+    extension = posixpath.splitext(file_path)[1].lstrip(".").lower()
+
+    if extension in _IMAGE_FORMATS or extension in _BINARY_DOCUMENT_FORMATS:
+        if view_range:
+            raise ValueError("The `view_range` parameter is not allowed for image or binary document files.")
+        raw = await sandbox.read_file(file_path)
+        if len(raw) > max_size:
+            raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_size} bytes)")
+        if extension in _IMAGE_FORMATS:
+            return {
+                "toolUseId": tool_use_id,
+                "status": "success",
+                "content": [{"image": {"format": _IMAGE_FORMATS[extension], "source": {"bytes": raw}}}],
+            }
+        return {
+            "toolUseId": tool_use_id,
+            "status": "success",
+            "content": [
+                {
+                    "document": {
+                        "format": _BINARY_DOCUMENT_FORMATS[extension],
+                        "name": posixpath.basename(file_path),
+                        "source": {"bytes": raw},
+                    }
+                }
+            ],
+        }
 
     file_content = await _read_text_or_reject_binary(sandbox, file_path, max_size)
 
@@ -724,9 +780,7 @@ async def _handle_find_line(
         return f"No matches for `{search_text}` in {file_path}."
 
     line_numbers = [index + 1 for index in hits]
-    truncated_note = (
-        f" (truncated to first {_MAX_FIND_LINE_HITS} hits)" if len(hits) == _MAX_FIND_LINE_HITS else ""
-    )
+    truncated_note = f" (truncated to first {_MAX_FIND_LINE_HITS} hits)" if len(hits) == _MAX_FIND_LINE_HITS else ""
 
     first = hits[0]
     lines = file_content.split("\n")

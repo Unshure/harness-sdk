@@ -270,6 +270,91 @@ describe('fileEditor tool', () => {
     })
   })
 
+  describe('view media', () => {
+    const imageCases: [string, string][] = [
+      ['photo.png', 'png'],
+      ['photo.jpg', 'jpeg'],
+      ['photo.jpeg', 'jpeg'],
+      ['photo.gif', 'gif'],
+      ['photo.webp', 'webp'],
+      ['photo.PNG', 'png'],
+    ]
+    for (const [filename, expectedFormat] of imageCases) {
+      it(`returns an image content block for ${filename}`, async () => {
+        const payload = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(32)])
+        const filePath = path.join(testDir, filename)
+        await fs.writeFile(filePath, payload)
+        const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+        expect(result).toMatchObject({
+          status: 'success',
+          toolUseId: 'test-id',
+          content: [{ image: { format: expectedFormat } }],
+        })
+        const block = (result as unknown as { content: [{ image: { source: { bytes: Uint8Array } } }] }).content[0]
+        expect(Buffer.from(block.image.source.bytes)).toEqual(payload)
+      })
+    }
+
+    const docCases: [string, string][] = [
+      ['report.pdf', 'pdf'],
+      ['report.doc', 'doc'],
+      ['report.docx', 'docx'],
+      ['report.xls', 'xls'],
+      ['report.xlsx', 'xlsx'],
+    ]
+    for (const [filename, expectedFormat] of docCases) {
+      it(`returns a document content block for ${filename}`, async () => {
+        const payload = Buffer.concat([Buffer.from('%PDF-1.4\n%\xd0\xd4\xc5\xd8\n', 'binary'), Buffer.alloc(32)])
+        const filePath = path.join(testDir, filename)
+        await fs.writeFile(filePath, payload)
+        const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+        expect(result).toMatchObject({
+          status: 'success',
+          content: [{ document: { format: expectedFormat, name: filename } }],
+        })
+      })
+    }
+
+    for (const filename of ['notes.csv', 'notes.html', 'notes.txt', 'notes.md']) {
+      it(`keeps ${filename} on the text path (numbered lines)`, async () => {
+        // csv/html/txt/md are documents by Bedrock's taxonomy but text-
+        // representable, so view stays on the numbered-lines path where
+        // find_line and str_replace still work.
+        const filePath = path.join(testDir, filename)
+        await fs.writeFile(filePath, 'alpha\nbeta\n', 'utf-8')
+        const result = await fileEditor.invoke({ command: 'view', path: filePath }, context)
+        expect(typeof result).toBe('string')
+        expect(result as string).toContain('alpha')
+        expect(result as string).toContain('beta')
+      })
+    }
+
+    it('rejects view_range on an image', async () => {
+      const filePath = path.join(testDir, 'photo.png')
+      await fs.writeFile(filePath, Buffer.from([0x89, 0x50, 0x4e, 0x47]))
+      await expect(fileEditor.invoke({ command: 'view', path: filePath, view_range: [1, 2] }, context)).rejects.toThrow(
+        /view_range/
+      )
+    })
+
+    it('rejects view_range on a document', async () => {
+      const filePath = path.join(testDir, 'report.pdf')
+      await fs.writeFile(filePath, Buffer.from('%PDF-1.4\n', 'utf-8'))
+      await expect(fileEditor.invoke({ command: 'view', path: filePath, view_range: [1, 2] }, context)).rejects.toThrow(
+        /view_range/
+      )
+    })
+
+    it('still enforces max_file_size on media', async () => {
+      const filePath = path.join(testDir, 'big.png')
+      await fs.writeFile(filePath, Buffer.alloc(4096))
+      const editor = makeFileEditor({ maxFileSize: 256 })
+      await expect(editor.invoke({ command: 'view', path: filePath }, context)).rejects.toThrow(
+        /exceeds maximum allowed size/
+      )
+    })
+  })
+
   describe('str_replace command', () => {
     it('replaces unique string occurrence', async () => {
       const filePath = await createTestFile('test.txt', 'Line 1\nLine 2 OLD\nLine 3\nLine 4')
