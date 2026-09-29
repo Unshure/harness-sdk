@@ -690,6 +690,90 @@ class TestBinaryRejection:
             await editor(command="view", path=str(file_path), tool_context=ctx)
 
 
+class TestViewMedia:
+    """``view`` returns a media-shaped ToolResult for images and binary documents."""
+
+    @pytest.mark.parametrize(
+        ("filename", "expected_format"),
+        [
+            ("photo.png", "png"),
+            ("photo.jpg", "jpeg"),
+            ("photo.jpeg", "jpeg"),
+            ("photo.gif", "gif"),
+            ("photo.webp", "webp"),
+            ("photo.PNG", "png"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_image_returns_image_content_block(self, editor, ctx, tmp_path, filename, expected_format):
+        file_path = tmp_path / filename
+        payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        assert result["toolUseId"] == "test-id"
+        (block,) = result["content"]
+        assert block["image"]["format"] == expected_format
+        assert block["image"]["source"]["bytes"] == payload
+
+    @pytest.mark.parametrize(
+        ("filename", "expected_format"),
+        [
+            ("report.pdf", "pdf"),
+            ("report.doc", "doc"),
+            ("report.docx", "docx"),
+            ("report.xls", "xls"),
+            ("report.xlsx", "xlsx"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_binary_document_returns_document_content_block(
+        self, editor, ctx, tmp_path, filename, expected_format
+    ):
+        file_path = tmp_path / filename
+        payload = b"%PDF-1.4\n%\xd0\xd4\xc5\xd8\n" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        (block,) = result["content"]
+        assert block["document"]["format"] == expected_format
+        assert block["document"]["name"] == filename
+        assert block["document"]["source"]["bytes"] == payload
+
+    @pytest.mark.parametrize("filename", ["notes.csv", "notes.html", "notes.txt", "notes.md"])
+    @pytest.mark.asyncio
+    async def test_text_representable_documents_stay_on_text_path(self, editor, ctx, tmp_path, filename):
+        # csv/html/txt/md are documents by Bedrock's taxonomy but are text-
+        # representable, so view keeps them on the numbered-lines path where
+        # find_line and str_replace still work.
+        file_path = _write(tmp_path / filename, "alpha\nbeta\n")
+        result = await editor(command="view", path=file_path, tool_context=ctx)
+        assert isinstance(result, str)
+        assert "alpha" in result and "beta" in result
+
+    @pytest.mark.asyncio
+    async def test_view_range_rejected_on_image(self, editor, ctx, tmp_path):
+        file_path = tmp_path / "photo.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+        with pytest.raises(ValueError, match="view_range"):
+            await editor(command="view", path=str(file_path), tool_context=ctx, view_range=[1, 2])
+
+    @pytest.mark.asyncio
+    async def test_view_range_rejected_on_document(self, editor, ctx, tmp_path):
+        file_path = tmp_path / "report.pdf"
+        file_path.write_bytes(b"%PDF-1.4\n")
+        with pytest.raises(ValueError, match="view_range"):
+            await editor(command="view", path=str(file_path), tool_context=ctx, view_range=[1, 2])
+
+    @pytest.mark.asyncio
+    async def test_media_still_bound_by_max_file_size(self, ctx, tmp_path):
+        file_path = tmp_path / "big.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_file_size=256)
+        with pytest.raises(ValueError, match="exceeds maximum allowed size"):
+            await editor(command="view", path=str(file_path), tool_context=ctx)
+
+
 class TestStrReplaceReplaceAll:
     """``str_replace`` must refuse ambiguous matches without ``replace_all``."""
 

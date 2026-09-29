@@ -2,6 +2,9 @@ import { tool } from '../../tools/tool-factory.js'
 import { z } from 'zod'
 import { Sandbox } from '../../sandbox/base.js'
 import { SandboxPathNotFoundError } from '../../sandbox/errors.js'
+import type { InvokableTool } from '../../tools/tool.js'
+import type { ToolResultBlockData } from '../../types/messages.js'
+import type { DocumentFormat, ImageFormat } from '../../mime.js'
 import * as path from 'path'
 import { Buffer } from 'buffer'
 
@@ -12,6 +15,26 @@ const MAX_DIRECTORY_DEPTH = 2
 const MAX_FIND_LINE_HITS = 200
 const DEFAULT_MAX_UNDO_ENTRIES = 32
 const DEFAULT_MAX_UNDO_BYTES = 32 * MB
+
+// Extension → Bedrock media format. Detection is by extension because the
+// sandbox seam exposes no MIME metadata. `csv`, `html`, `txt`, `md` are
+// text-representable documents and stay on the numbered-lines path so
+// find_line and str_replace still work; only opaque binary documents route
+// through the ToolResult document block.
+const IMAGE_FORMATS: Record<string, ImageFormat> = {
+  png: 'png',
+  jpg: 'jpeg',
+  jpeg: 'jpeg',
+  gif: 'gif',
+  webp: 'webp',
+}
+const BINARY_DOCUMENT_FORMATS: Record<string, DocumentFormat> = {
+  pdf: 'pdf',
+  doc: 'doc',
+  docx: 'docx',
+  xls: 'xls',
+  xlsx: 'xlsx',
+}
 
 const fileEditorInputSchema = z.object({
   command: z
@@ -67,7 +90,7 @@ const fileEditorInputSchema = z.object({
  * ```
  */
 export const DEFAULT_FILE_EDITOR_DESCRIPTION =
-  'Filesystem editor for viewing, creating, and editing files. Supports view (with line ranges), create, str_replace (exact match; ambiguous matches must opt in via replace_all), insert, find_line, and undo_edit. Files must use absolute paths.'
+  'Filesystem editor for viewing, creating, and editing files. Supports view (text with line ranges; png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents returned as media blocks), create, str_replace (exact match; ambiguous matches must opt in via replace_all), insert, find_line, and undo_edit. Files must use absolute paths.'
 
 export const DEFAULT_UNDO_STATE_KEY = 'file_editor.undo_history'
 
@@ -121,12 +144,17 @@ export interface MakeFileEditorOptions {
  * factory cannot see or overwrite each other's snapshots and any configured
  * session manager can persist it across restarts.
  */
-export function makeFileEditor(options?: MakeFileEditorOptions): ReturnType<typeof tool>
-export function makeFileEditor(sandbox: Sandbox | undefined, options?: MakeFileEditorOptions): ReturnType<typeof tool>
+export function makeFileEditor(
+  options?: MakeFileEditorOptions
+): InvokableTool<z.infer<typeof fileEditorInputSchema>, string | ToolResultBlockData>
+export function makeFileEditor(
+  sandbox: Sandbox | undefined,
+  options?: MakeFileEditorOptions
+): InvokableTool<z.infer<typeof fileEditorInputSchema>, string | ToolResultBlockData>
 export function makeFileEditor(
   sandboxOrOptions?: Sandbox | MakeFileEditorOptions,
   maybeOptions?: MakeFileEditorOptions
-): ReturnType<typeof tool> {
+): InvokableTool<z.infer<typeof fileEditorInputSchema>, string | ToolResultBlockData> {
   const boundSandbox = sandboxOrOptions instanceof Sandbox ? sandboxOrOptions : undefined
   const options = sandboxOrOptions instanceof Sandbox || maybeOptions ? (maybeOptions ?? {}) : (sandboxOrOptions ?? {})
   const maxFileSize = options.maxFileSize ?? DEFAULT_MAX_FILE_SIZE
@@ -188,7 +216,7 @@ export function makeFileEditor(
       try {
         switch (input.command) {
           case 'view':
-            return await handleView(sandbox, filePath, input.view_range, maxFileSize)
+            return await handleView(sandbox, filePath, input.view_range, maxFileSize, context.toolUse.toolUseId)
           case 'create':
             return await handleCreate(sandbox, filePath, input.file_text!, undoHistory, maxFileSize)
           case 'str_replace':
@@ -672,8 +700,9 @@ async function handleView(
   sandbox: Sandbox,
   filePath: string,
   viewRange: [number, number] | undefined,
-  maxSize: number
-): Promise<string> {
+  maxSize: number,
+  toolUseId: string
+): Promise<string | ToolResultBlockData> {
   const { exists, isDir } = await probeSandboxPath(sandbox, filePath)
   if (!exists) {
     throw new Error(`The path ${filePath} does not exist. Please provide a valid path.`)
@@ -684,6 +713,40 @@ async function handleView(
       throw new Error('The `view_range` parameter is not allowed when `path` points to a directory.')
     }
     return listDirectory(sandbox, filePath)
+  }
+
+  const extension = path.extname(filePath).replace(/^\./, '').toLowerCase()
+  const imageFormat = IMAGE_FORMATS[extension]
+  const documentFormat = BINARY_DOCUMENT_FORMATS[extension]
+
+  if (imageFormat !== undefined || documentFormat !== undefined) {
+    if (viewRange) {
+      throw new Error('The `view_range` parameter is not allowed for image or binary document files.')
+    }
+    const raw = await sandbox.readFile(filePath)
+    if (raw.byteLength > maxSize) {
+      throw new Error(`File size (${raw.byteLength} bytes) exceeds maximum allowed size (${maxSize} bytes)`)
+    }
+    if (imageFormat !== undefined) {
+      return {
+        toolUseId,
+        status: 'success',
+        content: [{ image: { format: imageFormat, source: { bytes: raw } } }],
+      }
+    }
+    return {
+      toolUseId,
+      status: 'success',
+      content: [
+        {
+          document: {
+            format: documentFormat!,
+            name: path.basename(filePath),
+            source: { bytes: raw },
+          },
+        },
+      ],
+    }
   }
 
   const fileContent = await readTextOrRejectBinary(sandbox, filePath, maxSize)
