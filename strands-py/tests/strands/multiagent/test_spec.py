@@ -15,7 +15,9 @@ from strands.multiagent.spec import (
     _default_builder,
     _resolve_spec,
 )
+from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from strands.tools.decorator import tool
+from tests.fixtures.mocked_model_provider import MockedModelProvider
 
 _AXES = dict(
     presets={},
@@ -135,6 +137,18 @@ def test_default_builder_inherits_all_tools_when_spec_tools_is_none():
     assert "write_tool" in child.tool_registry.registry
 
 
+def test_default_builder_skips_parent_context_manager_tools():
+    class StatefulModel(MockedModelProvider):
+        stateful = True
+
+    parent = Agent(model=MockedModelProvider([]), context_manager="auto")
+    assert "retrieve_context" in parent.tool_registry.registry
+
+    # A stateful child has no context manager, so it must not inherit the parent's retrieve_context.
+    child = _default_builder(parent)(AgentSpec(model=StatefulModel([])))
+    assert "retrieve_context" not in child.tool_registry.registry
+
+
 def test_default_builder_resolves_tools_and_inherits_model():
     @tool
     def read_tool():
@@ -188,3 +202,71 @@ def test_resolve_spec_fixed_empty_list_is_not_none():
         mcp_servers=[],
         tools=["read", "shell"],
     )
+
+
+def test_default_builder_propagates_sandbox():
+    """Child must inherit the parent's sandbox so tools route through it."""
+    sandbox = NotASandboxLocalEnvironment()
+    parent = Agent(sandbox=sandbox)
+    child = _default_builder(parent)(AgentSpec())
+    assert child.sandbox is sandbox
+
+
+def test_default_builder_propagates_trace_attributes():
+    """trace_attributes from the parent appear on the child."""
+    parent = Agent(trace_attributes={"team": "infra"})
+    child = _default_builder(parent)(AgentSpec())
+    assert child.trace_attributes == {"team": "infra"}
+
+
+def test_default_builder_uses_auto_context_manager():
+    """Child must get context_manager='auto' so it has proactive truncation and summarization."""
+    parent = Agent()
+    child = _default_builder(parent)(AgentSpec())
+    assert child.context_manager is not None
+
+
+def test_default_builder_skips_context_manager_for_stateful_model():
+    """Stateful models manage context server-side; context_manager must be None to avoid ValueError."""
+    from unittest.mock import MagicMock
+
+    stateful_model = MagicMock()
+    stateful_model.stateful = True
+    parent = Agent()
+    child = _default_builder(parent)(AgentSpec(model=stateful_model))
+    assert child.context_manager is None
+
+
+def test_default_builder_warns_on_unknown_tools(caplog):
+    """Requesting tools or MCP servers the parent doesn't own logs a warning and skips them."""
+    import logging
+
+    @tool
+    def read() -> str:
+        """Read a file."""
+        return ""
+
+    parent = Agent(tools=[read])
+    with caplog.at_level(logging.WARNING, logger="strands.multiagent.spec"):
+        child = _default_builder(parent)(AgentSpec(tools=["read", "missing"], mcp_servers=["missing_server"]))
+
+    assert any("missing" in r.message and "tool" in r.message for r in caplog.records)
+    assert any("missing_server" in r.message and "MCP server" in r.message for r in caplog.records)
+    # "read" was found; "missing" and "missing_server" were skipped
+    child_tool_names = [t.tool_name for t in child.tool_registry.registry.values()]
+    assert "read" in child_tool_names
+    assert "missing" not in child_tool_names
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        pytest.param(None, id="suppressed"),
+        pytest.param(lambda **kw: None, id="custom"),
+    ],
+)
+def test_default_builder_propagates_callback_handler(handler):
+    """callback_handler on the parent flows to the child."""
+    parent = Agent(callback_handler=handler)
+    child = _default_builder(parent)(AgentSpec())
+    assert child.callback_handler is parent.callback_handler
