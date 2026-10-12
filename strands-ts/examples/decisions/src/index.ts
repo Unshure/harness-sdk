@@ -18,7 +18,7 @@ async function main() {
   }
 
   const prompts = [
-    'The fruit is an banana.',
+    'The fruit is a banana.',
     'There is a round heavy object on the table.',
   ]
 

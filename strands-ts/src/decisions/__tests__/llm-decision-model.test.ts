@@ -99,13 +99,13 @@ describe('LLMDecisionModel', () => {
       expect(result.metadata.latencyMs).toBe(42)
     })
 
-    it('throws when the model omits latency metrics', async () => {
+    it('falls back to wall-clock latency when the provider omits latency metrics', async () => {
       const model = toolUseModel({ q: 'true' }, { latencyMs: null })
       const decision = new LLMDecisionModel(model)
 
-      await expect(decision.ask('x', { q: { instructions: 'ok?', choices: 'boolean' } })).rejects.toThrow(
-        /no latency information/
-      )
+      const result = await decision.ask('x', { q: { instructions: 'ok?', choices: 'boolean' } })
+
+      expect(result.metadata.latencyMs).toBeGreaterThanOrEqual(0)
     })
 
     it('returns Uncertain when the model picks the uncertain option', async () => {
@@ -242,6 +242,16 @@ describe('LLMDecisionModel', () => {
           q: { instructions: 'bool?', choices: 'boolean', uncertainOptions: { allow: true, threshold: 1.5 } },
         })
       ).rejects.toThrow(/threshold/)
+      expect(model.requests).toHaveLength(0)
+    })
+
+    it("rejects a choice literally named 'uncertain'", async () => {
+      const model = toolUseModel({})
+      const decision = new LLMDecisionModel(model)
+
+      await expect(
+        decision.ask('x', { q: { instructions: 'pick', choices: ['certain', 'uncertain'] as const } })
+      ).rejects.toThrow(/reserved for the Uncertain answer/)
       expect(model.requests).toHaveLength(0)
     })
 

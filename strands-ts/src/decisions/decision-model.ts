@@ -22,8 +22,8 @@ export abstract class DecisionModel {
    * @param questions - Map of identifier → question. The returned `answers` object
    *   is keyed off this same map and statically narrowed per question.
    * @returns A {@link DecisionResult} whose answers are statically narrowed from
-   *   each question's `options`.
-   * @throws Error if `questions` is empty or contains invalid options/thresholds.
+   *   each question's `choices`.
+   * @throws Error if `questions` is empty or contains invalid choices/thresholds.
    */
   async ask<Q extends Record<string, Question>>(state: DecisionInput, questions: Q): Promise<DecisionResult<Q>> {
     validateQuestions(questions)
@@ -86,6 +86,9 @@ function validateQuestions(questions: Record<string, Question>): void {
       }
       if (choices.some((choice) => typeof choice !== 'string' || choice.length === 0)) {
         throw new Error(`question id=<${id}> | choices must be non-empty strings`)
+      }
+      if (choices.includes('uncertain')) {
+        throw new Error(`question id=<${id}> | choice 'uncertain' is reserved for the Uncertain answer`)
       }
     }
     const threshold = question.uncertainOptions?.threshold

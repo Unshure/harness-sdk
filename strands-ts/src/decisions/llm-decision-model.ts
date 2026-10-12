@@ -55,7 +55,9 @@ export interface LLMDecisionModelOptions {
  *   },
  * })
  * // result.answers.color   is 'red' | 'green' | 'blue' | Uncertain
- * // result.answers.isFruit is boolean
+ * // result.answers.isFruit is boolean | Uncertain
+ * //   (opting out via uncertainOptions.allow only removes 'uncertain' from the
+ * //    model's enum; the static type still includes Uncertain for safety)
  * ```
  */
 export class LLMDecisionModel extends DecisionModel {
@@ -87,6 +89,7 @@ export class LLMDecisionModel extends DecisionModel {
     const messages = buildMessages(state)
     const systemPrompt = buildSystemPrompt(this._systemPrompt)
 
+    const startedAt = globalThis.performance.now()
     const stream = this._model.streamAggregated(messages, {
       systemPrompt,
       toolSpecs: [tool.toolSpec],
@@ -122,10 +125,7 @@ export class LLMDecisionModel extends DecisionModel {
     if (usage === undefined) {
       throw new Error('decision model returned no usage information')
     }
-    const latencyMs = metadata?.metrics?.latencyMs
-    if (latencyMs === undefined) {
-      throw new Error('decision model returned no latency information')
-    }
+    const latencyMs = metadata?.metrics?.latencyMs ?? Math.round(globalThis.performance.now() - startedAt)
 
     return {
       answers,
@@ -181,14 +181,7 @@ function convertSingleAnswer(
 ): boolean | string | Uncertain {
   const { answer, reason } = entry
   if (answer === UNCERTAIN_LITERAL) return new Uncertain(reason)
-  if (question.choices === 'boolean') {
-    if (answer === 'true') return true
-    if (answer === 'false') return false
-    throw new Error(`decision model returned unexpected boolean answer: ${answer}`)
-  }
-  if (!question.choices.includes(answer)) {
-    throw new Error(`decision model returned out-of-range answer: ${answer}`)
-  }
+  if (question.choices === 'boolean') return answer === 'true'
   return answer
 }
 

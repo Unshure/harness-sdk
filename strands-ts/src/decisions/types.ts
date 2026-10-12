@@ -33,11 +33,11 @@ export interface Question<C extends 'boolean' | readonly string[] = 'boolean' | 
   /** Uncertainty configuration for this question. */
   uncertainOptions?: {
     /** Whether `Uncertain` is a permitted response. Defaults to `true`. */
-    allow: boolean
+    allow?: boolean
     /**
-     * Minimum confidence required to commit to an answer, in `[0.5, 1.0]`.
+     * Minimum confidence required to commit to an answer, in `[0.0, 1.0]`.
      * Read only by implementations that return per-answer confidence (e.g.
-     * System One models); ignored by {@link LLMDecisionModel}. Defaults to `0.5`.
+     * System One models); ignored by {@link LLMDecisionModel}.
      */
     threshold?: number
   }
