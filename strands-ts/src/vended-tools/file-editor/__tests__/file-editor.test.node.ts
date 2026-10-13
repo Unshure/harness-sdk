@@ -693,6 +693,17 @@ describe('fileEditor tool', () => {
       ).rejects.toThrow('exceeding the maximum')
     })
 
+    it('accounts for the join newline in the insert preflight', async () => {
+      // Projected size must include the separator newline joining the
+      // inserted block to existing content; a 1-byte original + 1-byte insert
+      // produces a 3-byte file (`a\nX`), not 2.
+      const editor = makeFileEditor({ maxFileSize: 2 })
+      const filePath = await createTestFile('tight.txt', 'a')
+      await expect(
+        editor.invoke({ command: 'insert', path: filePath, insert_line: 1, new_str: 'X' }, context)
+      ).rejects.toThrow('exceeding the maximum')
+    })
+
     it('preflights str_replace output before allocation', async () => {
       // Guards #3235: replace_all must reject an oversized projected output
       // by byte-count arithmetic, before V8 allocates the substituted string.
@@ -846,6 +857,19 @@ describe('fileEditor tool', () => {
       const filePath = await createTestFile('exact.txt', 'hit line\n'.repeat(MAX_FIND_LINE_HITS))
       const result = await fileEditor.invoke({ command: 'find_line', path: filePath, search_text: 'hit' }, context)
       expect(result).not.toContain('truncated')
+    })
+
+    it('returns no matches for an empty search_text in either mode', async () => {
+      // Both branches must align: an empty search string once matched every
+      // line in the plain branch while the fuzzy branch returned "no matches".
+      const filePath = await createTestFile('empty-search.txt', 'alpha\nbeta\n')
+      const plain = await fileEditor.invoke({ command: 'find_line', path: filePath, search_text: '' }, context)
+      const fuzzy = await fileEditor.invoke(
+        { command: 'find_line', path: filePath, search_text: '', fuzzy: true },
+        context
+      )
+      expect(plain).toContain('No matches')
+      expect(fuzzy).toContain('No matches')
     })
 
     it('fuzzy search is linear on pathological input', async () => {

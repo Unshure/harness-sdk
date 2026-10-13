@@ -24,7 +24,7 @@ await agent.invoke('Create a file /tmp/notes.txt with "# My Notes"')
 
 `makeFileEditor` accepts:
 
-- `root` (string, optional): confines every operation to an absolute directory. Confinement is *lexical*: paths are normalized (so `..` segments collapse before the containment check) and must sit inside `root`. The editor does not follow symlinks itself — whether a symlink inside `root` can escape it is governed by the sandbox. On first use, the editor verifies `root` exists in the sandbox via `Sandbox.listFiles`; if it does not, the call fails.
+- `root` (string, optional): confines every operation to an absolute directory. Confinement is _lexical_: paths are normalized (so `..` segments collapse before the containment check) and must sit inside `root`. The editor does not follow symlinks itself — whether a symlink inside `root` can escape it is governed by the sandbox. On first use, the editor verifies `root` exists in the sandbox via `Sandbox.listFiles`; if it does not, the call fails.
 - `maxFileSize` (number, optional): byte cap on files that can be read or written, and on the projected byte size of any edit's output. Defaults to 1 MB.
 - `maxUndoEntries` (number, optional): maximum distinct paths retained in the per-agent in-memory undo history. Defaults to 32.
 - `maxUndoBytes` (number, optional): approximate byte cap on the per-agent undo history. Defaults to 32 MB.

@@ -107,6 +107,8 @@ def make_file_editor(
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
 
+    sizes_state_key = f"{undo_state_key}.sizes"
+
     if normalized_root is not None and description is DEFAULT_FILE_EDITOR_DESCRIPTION:
         description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
 
@@ -166,12 +168,16 @@ def make_file_editor(
         mutates_undo = command in _MUTATING_COMMANDS
         state = tool_context.agent.state if mutates_undo else None
         undo_history: dict[str, str] = state.get(undo_state_key) or {} if state is not None else {}
+        # Sidecar byte-size cache aligned to ``undo_history`` keys so eviction
+        # bookkeeping stays O(1) amortized across edits (no re-encoding every
+        # stored snapshot on each call).
+        undo_sizes: dict[str, int] = state.get(sizes_state_key) or {} if state is not None else {}
 
         try:
             if command == "view":
                 return await _handle_view(active, resolved, view_range, max_file_size)
             if command == "create":
-                return await _handle_create(active, resolved, file_text, undo_history, max_file_size)
+                return await _handle_create(active, resolved, file_text, undo_history, undo_sizes, max_file_size)
             if command == "str_replace":
                 return await _handle_str_replace(
                     active,
@@ -181,6 +187,7 @@ def make_file_editor(
                     replace_all,
                     max_file_size,
                     undo_history,
+                    undo_sizes,
                     max_undo_entries,
                     max_undo_bytes,
                 )
@@ -192,19 +199,21 @@ def make_file_editor(
                     new_str,
                     max_file_size,
                     undo_history,
+                    undo_sizes,
                     max_undo_entries,
                     max_undo_bytes,
                 )
             if command == "find_line":
                 return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
             if command == "undo_edit":
-                return await _handle_undo(active, resolved, undo_history)
+                return await _handle_undo(active, resolved, undo_history, undo_sizes)
             raise ValueError(f"Unknown command: {command}")
         finally:
             if state is not None:
                 # Handlers only mutate after a successful sandbox write, so
                 # persisting on the exception path is safe.
                 state.set(undo_state_key, undo_history)
+                state.set(sizes_state_key, undo_sizes)
 
     return file_editor_tool
 
@@ -316,7 +325,11 @@ def _preflight_insert_output_size(
     file_path: str,
 ) -> None:
     """Reject an ``insert`` whose projected UTF-8 output would exceed ``max_size``."""
-    projected = len(original_content.encode("utf-8")) + len(new_str.encode("utf-8"))
+    # One extra newline joins the inserted block to the surrounding content.
+    # No separator is added when the file was empty — ``_build_insert_result``
+    # replaces the content outright in that case.
+    separator = 1 if original_content else 0
+    projected = len(original_content.encode("utf-8")) + len(new_str.encode("utf-8")) + separator
     if projected > max_size:
         raise ValueError(
             f"The edit would produce a {projected}-byte file at {file_path}, "
@@ -429,6 +442,11 @@ def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) ->
     """
     lines = content.split("\n")
     hits: list[int] = []
+    # Empty search text would make the plain substring branch match every line
+    # (``"" in line`` is always true); the fuzzy branch already short-circuits
+    # on an empty token list, so align both modes.
+    if not search_text:
+        return hits
     if fuzzy:
         # Whitespace-tolerant, case-insensitive: match tokens in order using a
         # linear ordered-subsequence scan. A previous implementation joined
@@ -466,6 +484,7 @@ def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) ->
 
 def _store_undo_snapshot(
     undo_history: dict[str, str],
+    undo_sizes: dict[str, int],
     file_path: str,
     content: str,
     max_entries: int,
@@ -475,15 +494,19 @@ def _store_undo_snapshot(
 
     ``dict`` insertion order gives LRU semantics: a re-inserted key is moved to
     the end, and eviction removes the oldest key when either the entry count or
-    the aggregate byte cap is exceeded.
+    the aggregate byte cap is exceeded. ``undo_sizes`` is a parallel dict that
+    caches each entry's UTF-8 byte length so bookkeeping does not re-encode
+    every stored snapshot on each edit.
 
     Callers must invoke this only *after* the corresponding write has succeeded
     so a failed write does not overwrite a still-valid earlier snapshot.
     """
     if file_path in undo_history:
         del undo_history[file_path]
+        undo_sizes.pop(file_path, None)
     undo_history[file_path] = content
-    total_bytes = sum(len(v.encode("utf-8")) for v in undo_history.values())
+    undo_sizes[file_path] = len(content.encode("utf-8"))
+    total_bytes = sum(undo_sizes.values())
     # Preserve the just-inserted entry: an edit whose snapshot alone exceeds
     # `max_bytes` would otherwise evict every older entry and then itself,
     # leaving the user with no undo for a write we already reported as
@@ -491,8 +514,8 @@ def _store_undo_snapshot(
     # than the whole budget.
     while len(undo_history) > 1 and (len(undo_history) > max_entries or total_bytes > max_bytes):
         oldest_key = next(iter(undo_history))
-        evicted = undo_history.pop(oldest_key)
-        total_bytes -= len(evicted.encode("utf-8"))
+        del undo_history[oldest_key]
+        total_bytes -= undo_sizes.pop(oldest_key, 0)
 
 
 # ---- Sandbox-routed I/O helpers ----
@@ -598,6 +621,7 @@ async def _handle_create(
     file_path: str,
     file_text: str | None,
     undo_history: dict[str, str],
+    undo_sizes: dict[str, int],
     max_size: int,
 ) -> str:
     """Handle the ``create`` command: write a new file, refusing to overwrite."""
@@ -614,6 +638,7 @@ async def _handle_create(
     # create means deleting the file, which is a different operation from
     # "restore prior content" and is easy for the caller to do themselves.
     undo_history.pop(file_path, None)
+    undo_sizes.pop(file_path, None)
     return f"File created successfully at: {file_path}"
 
 
@@ -625,6 +650,7 @@ async def _handle_str_replace(
     replace_all: bool,
     max_size: int,
     undo_history: dict[str, str],
+    undo_sizes: dict[str, int],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -650,7 +676,7 @@ async def _handle_str_replace(
     # Snapshot only after the write commits so a failed write leaves the
     # previous entry — which still reflects on-disk state — valid to undo.
     await sandbox.write_text(file_path, new_content)
-    _store_undo_snapshot(undo_history, file_path, file_content, max_undo_entries, max_undo_bytes)
+    _store_undo_snapshot(undo_history, undo_sizes, file_path, file_content, max_undo_entries, max_undo_bytes)
 
     suffix = f" ({count} occurrences replaced)" if replace_all and count > 1 else ""
     return (
@@ -667,6 +693,7 @@ async def _handle_insert(
     new_str: str | None,
     max_size: int,
     undo_history: dict[str, str],
+    undo_sizes: dict[str, int],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -687,7 +714,7 @@ async def _handle_insert(
     new_content, snippet, start_line = _build_insert_result(file_text, insert_line, new_str)
 
     await sandbox.write_text(file_path, new_content)
-    _store_undo_snapshot(undo_history, file_path, file_text, max_undo_entries, max_undo_bytes)
+    _store_undo_snapshot(undo_history, undo_sizes, file_path, file_text, max_undo_entries, max_undo_bytes)
 
     return (
         f"The file {file_path} has been edited. "
@@ -745,7 +772,12 @@ async def _handle_find_line(
     )
 
 
-async def _handle_undo(sandbox: Sandbox, file_path: str, undo_history: dict[str, str]) -> str:
+async def _handle_undo(
+    sandbox: Sandbox,
+    file_path: str,
+    undo_history: dict[str, str],
+    undo_sizes: dict[str, int],
+) -> str:
     """Handle the ``undo_edit`` command: restore the last in-memory snapshot for ``file_path``.
 
     The snapshot is unconditionally written back through the sandbox: if the
@@ -762,4 +794,5 @@ async def _handle_undo(sandbox: Sandbox, file_path: str, undo_history: dict[str,
     previous_content = undo_history[file_path]
     await sandbox.write_text(file_path, previous_content)
     del undo_history[file_path]
+    undo_sizes.pop(file_path, None)
     return f"Reverted {file_path} to its previous in-memory snapshot."

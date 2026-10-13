@@ -133,6 +133,7 @@ export function makeFileEditor(
   const maxUndoEntries = options.maxUndoEntries ?? DEFAULT_MAX_UNDO_ENTRIES
   const maxUndoBytes = options.maxUndoBytes ?? DEFAULT_MAX_UNDO_BYTES
   const undoStateKey = options.undoStateKey ?? DEFAULT_UNDO_STATE_KEY
+  const sizesStateKey = `${undoStateKey}.sizes`
 
   if (options.root !== undefined && !path.isAbsolute(options.root)) {
     throw new Error(`root must be an absolute path, got: ${options.root}`)
@@ -180,16 +181,23 @@ export function makeFileEditor(
       // the state load/save (which deep-copies and JSON-validates).
       const mutatesUndo = MUTATING_COMMANDS.has(input.command)
       const appState = mutatesUndo ? context.agent.appState : undefined
-      const undoHistory: Record<string, string> = mutatesUndo
-        ? ((appState?.get(undoStateKey) as Record<string, string> | undefined) ?? {})
-        : {}
+      // Null-prototype objects defend against a `__proto__` key sneaking in as
+      // an edit target; state round-trips plain objects, so re-wrap on load.
+      const undoHistory = Object.assign(
+        Object.create(null) as Record<string, string>,
+        (appState?.get(undoStateKey) as Record<string, string> | undefined) ?? {}
+      )
+      const undoSizes = Object.assign(
+        Object.create(null) as Record<string, number>,
+        (appState?.get(sizesStateKey) as Record<string, number> | undefined) ?? {}
+      )
 
       try {
         switch (input.command) {
           case 'view':
             return await handleView(sandbox, filePath, input.view_range, maxFileSize)
           case 'create':
-            return await handleCreate(sandbox, filePath, input.file_text!, undoHistory, maxFileSize)
+            return await handleCreate(sandbox, filePath, input.file_text!, undoHistory, undoSizes, maxFileSize)
           case 'str_replace':
             return await handleStrReplace(
               sandbox,
@@ -199,6 +207,7 @@ export function makeFileEditor(
               input.replace_all === true,
               maxFileSize,
               undoHistory,
+              undoSizes,
               maxUndoEntries,
               maxUndoBytes
             )
@@ -210,13 +219,14 @@ export function makeFileEditor(
               input.new_str!,
               maxFileSize,
               undoHistory,
+              undoSizes,
               maxUndoEntries,
               maxUndoBytes
             )
           case 'find_line':
             return await handleFindLine(sandbox, filePath, input.search_text!, input.fuzzy === true, maxFileSize)
           case 'undo_edit':
-            return await handleUndo(sandbox, filePath, undoHistory)
+            return await handleUndo(sandbox, filePath, undoHistory, undoSizes)
           default:
             throw new Error(`Unknown command: ${(input as { command: string }).command}`)
         }
@@ -225,6 +235,7 @@ export function makeFileEditor(
           // Handlers only mutate after a successful sandbox write, so
           // persisting on the exception path is safe.
           appState.set(undoStateKey, undoHistory)
+          appState.set(sizesStateKey, undoSizes)
         }
       }
     },
@@ -333,7 +344,11 @@ function preflightStrReplaceOutputSize(
  * Reject an `insert` whose projected UTF-8 output would exceed `maxSize`.
  */
 function preflightInsertOutputSize(originalContent: string, newStr: string, maxSize: number, filePath: string): void {
-  const projected = Buffer.byteLength(originalContent, 'utf-8') + Buffer.byteLength(newStr, 'utf-8')
+  // One extra newline joins the inserted block to the surrounding content.
+  // No separator is added when the file was empty — `buildInsertResult`
+  // replaces the content outright in that case.
+  const separator = originalContent === '' ? 0 : 1
+  const projected = Buffer.byteLength(originalContent, 'utf-8') + Buffer.byteLength(newStr, 'utf-8') + separator
   if (projected > maxSize) {
     throw new Error(
       `The edit would produce a ${projected}-byte file at ${filePath}, exceeding the maximum allowed size of ${maxSize} bytes.`
@@ -493,6 +508,10 @@ function makeOutput(fileContent: string, fileDescriptor: string, initLine: numbe
 function findLineNumbers(content: string, searchText: string, fuzzy: boolean, cap: number): number[] {
   const lines = content.split('\n')
   const hits: number[] = []
+  // Empty search text would make the plain-substring branch match every line
+  // (`''.includes(..)` is always true); the fuzzy branch already short-circuits
+  // on an empty token list, so align both modes.
+  if (searchText === '') return hits
   if (fuzzy) {
     // Whitespace-tolerant, case-insensitive: match tokens in order using a
     // linear ordered-subsequence scan. A previous implementation joined
@@ -549,6 +568,7 @@ function findLineNumbers(content: string, searchText: string, fuzzy: boolean, ca
  */
 function storeUndoSnapshot(
   undoHistory: Record<string, string>,
+  undoSizes: Record<string, number>,
   filePath: string,
   content: string,
   maxEntries: number,
@@ -557,22 +577,31 @@ function storeUndoSnapshot(
   // Delete-then-set so a repeat path moves to the end of insertion order. Path
   // keys are absolute (start with `/` or a drive letter), so no integer-key
   // reordering applies and iteration order equals insertion order.
-  if (filePath in undoHistory) delete undoHistory[filePath]
+  if (Object.hasOwn(undoHistory, filePath)) {
+    delete undoHistory[filePath]
+    delete undoSizes[filePath]
+  }
   undoHistory[filePath] = content
+  undoSizes[filePath] = Buffer.byteLength(content, 'utf-8')
+  // `undoSizes` is a sidecar byte-length cache so this sum is O(entries) over
+  // small integers, not O(entries · content_bytes) across stored snapshots.
   let totalBytes = 0
-  for (const value of Object.values(undoHistory)) totalBytes += Buffer.byteLength(value, 'utf-8')
-  let keys = Object.keys(undoHistory)
+  for (const bytes of Object.values(undoSizes)) totalBytes += bytes
+  const keys = Object.keys(undoHistory)
   // Preserve the just-inserted entry: an edit whose snapshot alone exceeds
   // `maxBytes` would otherwise evict every older entry and then itself,
   // leaving the user with no undo for a write we already reported as
   // successful. The byte cap is best-effort when a single snapshot is larger
   // than the whole budget.
-  while (keys.length > 1 && (keys.length > maxEntries || totalBytes > maxBytes)) {
-    const oldestKey = keys[0]!
-    const evicted = undoHistory[oldestKey]!
+  let index = 0
+  let remaining = keys.length
+  while (remaining > 1 && (remaining > maxEntries || totalBytes > maxBytes)) {
+    const oldestKey = keys[index]!
+    totalBytes -= undoSizes[oldestKey] ?? 0
     delete undoHistory[oldestKey]
-    totalBytes -= Buffer.byteLength(evicted, 'utf-8')
-    keys = Object.keys(undoHistory)
+    delete undoSizes[oldestKey]
+    index++
+    remaining--
   }
 }
 
@@ -696,6 +725,7 @@ async function handleCreate(
   filePath: string,
   fileText: string,
   undoHistory: Record<string, string>,
+  undoSizes: Record<string, number>,
   maxSize: number
 ): Promise<string> {
   if (fileText === undefined) {
@@ -713,6 +743,7 @@ async function handleCreate(
   // means deleting the file, which is a different operation from "restore
   // prior content" and is easy for the caller to do themselves.
   delete undoHistory[filePath]
+  delete undoSizes[filePath]
   return `File created successfully at: ${filePath}`
 }
 
@@ -724,6 +755,7 @@ async function handleStrReplace(
   replaceAll: boolean,
   maxSize: number,
   undoHistory: Record<string, string>,
+  undoSizes: Record<string, number>,
   maxUndoEntries: number,
   maxUndoBytes: number
 ): Promise<string> {
@@ -757,7 +789,7 @@ async function handleStrReplace(
   // Snapshot only after the write commits so a failed write leaves the
   // previous entry — which still reflects on-disk state — valid to undo.
   await sandbox.writeText(filePath, newContent)
-  storeUndoSnapshot(undoHistory, filePath, fileContent, maxUndoEntries, maxUndoBytes)
+  storeUndoSnapshot(undoHistory, undoSizes, filePath, fileContent, maxUndoEntries, maxUndoBytes)
 
   const suffix = replaceAll && count > 1 ? ` (${count} occurrences replaced)` : ''
   return `The file ${filePath} has been edited.${suffix} ${makeOutput(snippet, `a snippet of ${filePath}`, startLine + 1)}Review the changes and make sure they are as expected. Edit the file again if necessary.`
@@ -770,6 +802,7 @@ async function handleInsert(
   newStr: string,
   maxSize: number,
   undoHistory: Record<string, string>,
+  undoSizes: Record<string, number>,
   maxUndoEntries: number,
   maxUndoBytes: number
 ): Promise<string> {
@@ -792,7 +825,7 @@ async function handleInsert(
   const { newContent, snippet, startLine } = buildInsertResult(fileText, insertLine, newStr)
 
   await sandbox.writeText(filePath, newContent)
-  storeUndoSnapshot(undoHistory, filePath, fileText, maxUndoEntries, maxUndoBytes)
+  storeUndoSnapshot(undoHistory, undoSizes, filePath, fileText, maxUndoEntries, maxUndoBytes)
 
   return `The file ${filePath} has been edited. ${makeOutput(snippet, 'a snippet of the edited file', startLine + 1)}Review the changes and make sure they are as expected (correct indentation, no duplicate lines, etc). Edit the file again if necessary.`
 }
@@ -848,12 +881,18 @@ async function handleFindLine(
  * The snapshot stays in history until the restoring write succeeds so a
  * transient sandbox failure leaves undo retryable.
  */
-async function handleUndo(sandbox: Sandbox, filePath: string, undoHistory: Record<string, string>): Promise<string> {
+async function handleUndo(
+  sandbox: Sandbox,
+  filePath: string,
+  undoHistory: Record<string, string>,
+  undoSizes: Record<string, number>
+): Promise<string> {
   const previous = undoHistory[filePath]
   if (previous === undefined) {
     throw new Error(`No undo history available for ${filePath} in this session.`)
   }
   await sandbox.writeText(filePath, previous)
   delete undoHistory[filePath]
+  delete undoSizes[filePath]
   return `Reverted ${filePath} to its previous in-memory snapshot.`
 }

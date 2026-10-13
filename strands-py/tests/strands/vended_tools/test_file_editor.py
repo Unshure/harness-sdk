@@ -791,6 +791,16 @@ class TestFindLine:
         assert "truncated" not in result
 
     @pytest.mark.asyncio
+    async def test_empty_search_text_returns_no_matches(self, editor, ctx, tmp_path):
+        # Both branches must align: an empty search string once matched every
+        # line in the plain branch while the fuzzy branch returned "no matches".
+        file_path = _write(tmp_path / "test.txt", "alpha\nbeta\n")
+        plain = await editor(command="find_line", path=file_path, tool_context=ctx, search_text="")
+        fuzzy = await editor(command="find_line", path=file_path, tool_context=ctx, search_text="", fuzzy=True)
+        assert "No matches" in plain
+        assert "No matches" in fuzzy
+
+    @pytest.mark.asyncio
     async def test_fuzzy_search_is_linear_on_pathological_input(self, editor, ctx, tmp_path):
         # Regression: an earlier implementation joined escaped tokens with a
         # regex ``.*`` chain, which backtracks catastrophically on a long
@@ -1005,4 +1015,20 @@ class TestOversizePreflight:
                 tool_context=ctx,
                 insert_line=0,
                 new_str="y" * 10,
+            )
+
+    @pytest.mark.asyncio
+    async def test_insert_preflight_accounts_for_join_newline(self, ctx, tmp_path):
+        # Projected size must include the separator newline that joins the
+        # inserted block to existing content; a 1-byte original + 1-byte insert
+        # produces a 3-byte file (`a\nX`), not 2.
+        e = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_file_size=2)
+        file_path = _write(tmp_path / "tight.txt", "a")
+        with pytest.raises(ValueError, match="exceeding the maximum"):
+            await e(
+                command="insert",
+                path=file_path,
+                tool_context=ctx,
+                insert_line=1,
+                new_str="X",
             )
