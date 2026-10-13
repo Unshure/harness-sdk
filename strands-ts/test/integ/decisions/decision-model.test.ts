@@ -32,7 +32,7 @@ describe.each(providers)('DecisionModel Integration Tests ($name)', (provider) =
         const decision = provider.create()
 
         const result = await decision.ask('The fruit is a ripe banana.', {
-          color: { question: 'What color is the fruit?', choices: ['red', 'yellow', 'blue'] as const },
+          color: { question: 'What color is the fruit?', choices: ['red', 'yellow', 'blue'] },
           isFruit: {
             question: 'Is the thing described a fruit?',
             choices: 'boolean',
@@ -55,7 +55,7 @@ describe.each(providers)('DecisionModel Integration Tests ($name)', (provider) =
         const decision = provider.create()
 
         const result = await decision.ask('There is a round object on the table.', {
-          color: { question: 'What color is the object?', choices: ['red', 'green', 'blue'] as const },
+          color: { question: 'What color is the object?', choices: ['red', 'green', 'blue'] },
         })
 
         expect(result.answers.color).toBeInstanceOf(Uncertain)

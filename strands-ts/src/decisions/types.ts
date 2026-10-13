@@ -15,6 +15,19 @@ import type { ContentBlock, Message } from '../types/messages.js'
 export type DecisionInput = string | ContentBlock[] | Message[]
 
 /**
+ * Identity helper that preserves the literal types of an inline question map
+ * when it's stored in a variable before being passed to {@link DecisionModel.ask}.
+ *
+ * `ask` already uses a `const` type parameter, so inline question maps work
+ * without any helper. Use `defineQuestions` only when you need to declare the
+ * map ahead of time — it keeps `choices` tuples and `'boolean'` as literal
+ * types without an explicit `as const`.
+ */
+export function defineQuestions<const Q extends Record<string, Question>>(questions: Q): Q {
+  return questions
+}
+
+/**
  * A single question posed to a {@link DecisionModel}.
  *
  * `choices` constrains the shape of the answer: `'boolean'` yields a boolean, and
@@ -22,8 +35,9 @@ export type DecisionInput = string | ContentBlock[] | Message[]
  * {@link Uncertain} is also a possible answer unless opted out via
  * `uncertainOptions.allow = false`.
  *
- * @typeParam C - Static shape of the `choices` field; narrow it with `as const`
- *   so TypeScript keeps the literal types.
+ * @typeParam C - Static shape of the `choices` field. `ask` is declared with a
+ *   `const` type parameter, so inline question maps keep their tuple literals
+ *   without an explicit `as const`.
  */
 export interface Question<C extends 'boolean' | readonly string[] = 'boolean' | readonly string[]> {
   /** The question posed to the model, in natural language. */
@@ -64,13 +78,15 @@ export class Uncertain {
  *
  * - `Question<'boolean'>` yields `boolean | Uncertain`.
  * - `Question<readonly ['red', 'green']>` yields `'red' | 'green' | Uncertain`.
+ * - An un-narrowed `Question` (e.g. an entry of `Record<string, Question>` without
+ *   `as const`) falls back to `boolean | string | Uncertain`.
  */
 export type AnswerOf<Q> =
   Q extends Question<'boolean'>
     ? boolean | Uncertain
     : Q extends Question<infer S extends readonly string[]>
       ? S[number] | Uncertain
-      : never
+      : boolean | string | Uncertain
 
 /**
  * Result returned by {@link DecisionModel.ask}, keyed by the same identifiers

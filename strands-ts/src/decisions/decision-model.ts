@@ -23,9 +23,10 @@ export abstract class DecisionModel {
    *   is keyed off this same map and statically narrowed per question.
    * @returns A {@link DecisionResult} whose answers are statically narrowed from
    *   each question's `choices`.
-   * @throws Error if `questions` is empty or contains invalid choices/thresholds.
+   * @throws Error if `questions` is empty or contains an invalid `question`,
+   *   `choices`, or `uncertainOptions`.
    */
-  async ask<Q extends Record<string, Question>>(state: DecisionInput, questions: Q): Promise<DecisionResult<Q>> {
+  async ask<const Q extends Record<string, Question>>(state: DecisionInput, questions: Q): Promise<DecisionResult<Q>> {
     validateQuestions(questions)
 
     const span = trace.getTracer(getServiceName()).startSpan('decision', {
@@ -65,7 +66,7 @@ export abstract class DecisionModel {
    * {@link DecisionResult}, including `metadata.latencyMs` sourced from the
    * underlying model provider.
    */
-  protected abstract _ask<Q extends Record<string, Question>>(
+  protected abstract _ask<const Q extends Record<string, Question>>(
     state: DecisionInput,
     questions: Q
   ): Promise<DecisionResult<Q>>
@@ -77,6 +78,13 @@ function validateQuestions(questions: Record<string, Question>): void {
 
   for (const id of ids) {
     const question = questions[id]!
+    if (typeof question.question !== 'string' || question.question.trim().length === 0) {
+      throw new Error(`question id=<${id}> | question must be a non-empty string`)
+    }
+    const allow = question.uncertainOptions?.allow
+    if (allow !== undefined && typeof allow !== 'boolean') {
+      throw new Error(`question id=<${id}> | uncertainOptions.allow must be a boolean`)
+    }
     const { choices } = question
     if (choices !== 'boolean') {
       if (!Array.isArray(choices) || choices.length === 0) {

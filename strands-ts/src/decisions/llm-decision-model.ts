@@ -51,7 +51,7 @@ export interface LLMDecisionModelOptions {
  * const result = await decision.ask('The fruit is an apple', {
  *   color: {
  *     question: 'What color is the fruit?',
- *     choices: ['red', 'green', 'blue'] as const,
+ *     choices: ['red', 'green', 'blue'],
  *   },
  *   isFruit: {
  *     question: 'Is the thing talked about a fruit?',
@@ -83,7 +83,7 @@ export class LLMDecisionModel extends DecisionModel {
     this._systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT
   }
 
-  protected async _ask<Q extends Record<string, Question>>(
+  protected async _ask<const Q extends Record<string, Question>>(
     state: DecisionInput,
     questions: Q
   ): Promise<DecisionResult<Q>> {
@@ -141,7 +141,7 @@ export class LLMDecisionModel extends DecisionModel {
   }
 }
 
-function buildAnswerSchema<Q extends Record<string, Question>>(
+function buildAnswerSchema<const Q extends Record<string, Question>>(
   questions: Q
 ): z.ZodObject<Record<string, z.ZodObject<{ answer: z.ZodEnum; reason: z.ZodOptional<z.ZodString> }>>> {
   const shape: Record<string, z.ZodObject<{ answer: z.ZodEnum; reason: z.ZodOptional<z.ZodString> }>> = {}
@@ -163,7 +163,7 @@ function answerLiterals(question: Question, allowUncertain: boolean): readonly s
   return allowUncertain ? [...base, UNCERTAIN_LITERAL] : [...base]
 }
 
-function convertAnswers<Q extends Record<string, Question>>(
+function convertAnswers<const Q extends Record<string, Question>>(
   raw: Record<string, { answer: string; reason?: string }>,
   questions: Q
 ): { [K in keyof Q]: AnswerOf<Q[K]> } {

@@ -1,4 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { context, trace } from '@opentelemetry/api'
+import { InMemorySpanExporter, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { NodeTracerProvider } from '@opentelemetry/sdk-trace-node'
 
 import { TestModelProvider } from '../../__fixtures__/model-test-helpers.js'
 import { Model } from '../../models/model.js'
@@ -84,7 +87,7 @@ describe('LLMDecisionModel', () => {
       const decision = new LLMDecisionModel({ model })
 
       const result = await decision.ask('The fruit is an apple', {
-        color: { question: 'What color is the fruit?', choices: ['red', 'green', 'blue'] as const },
+        color: { question: 'What color is the fruit?', choices: ['red', 'green', 'blue'] },
         isFruit: {
           question: 'Is the thing talked about a fruit?',
           choices: 'boolean',
@@ -113,7 +116,7 @@ describe('LLMDecisionModel', () => {
       const decision = new LLMDecisionModel({ model })
 
       const result = await decision.ask('ambiguous', {
-        color: { question: 'color?', choices: ['red', 'green'] as const },
+        color: { question: 'color?', choices: ['red', 'green'] },
       })
 
       expect(result.answers.color).toBeInstanceOf(Uncertain)
@@ -124,7 +127,7 @@ describe('LLMDecisionModel', () => {
       const decision = new LLMDecisionModel({ model })
 
       const result = await decision.ask('ambiguous', {
-        color: { question: 'color?', choices: ['red', 'green'] as const },
+        color: { question: 'color?', choices: ['red', 'green'] },
       })
 
       const answer = result.answers.color
@@ -137,7 +140,7 @@ describe('LLMDecisionModel', () => {
       const decision = new LLMDecisionModel({ model })
 
       await decision.ask('state', {
-        q: { question: 'ok?', choices: ['yes', 'no'] as const, uncertainOptions: { allow: false } },
+        q: { question: 'ok?', choices: ['yes', 'no'], uncertainOptions: { allow: false } },
       })
 
       const toolSpec = model.options[0]?.toolSpecs?.[0]
@@ -151,7 +154,7 @@ describe('LLMDecisionModel', () => {
       const model = toolUseModel({ q: 'uncertain' })
       const decision = new LLMDecisionModel({ model })
 
-      await decision.ask('state', { q: { question: 'ok?', choices: ['yes', 'no'] as const } })
+      await decision.ask('state', { q: { question: 'ok?', choices: ['yes', 'no'] } })
 
       const toolSpec = model.options[0]?.toolSpecs?.[0]
       const schema = toolSpec?.inputSchema as {
@@ -233,6 +236,35 @@ describe('LLMDecisionModel', () => {
       expect(model.requests).toHaveLength(0)
     })
 
+    it('rejects a missing or empty question text', async () => {
+      const model = toolUseModel({})
+      const decision = new LLMDecisionModel({ model })
+
+      await expect(decision.ask('x', { q: { question: '   ', choices: 'boolean' } })).rejects.toThrow(
+        /question must be a non-empty string/
+      )
+      await expect(decision.ask('x', { q: { choices: 'boolean' } as unknown as Question })).rejects.toThrow(
+        /question must be a non-empty string/
+      )
+      expect(model.requests).toHaveLength(0)
+    })
+
+    it('rejects a non-boolean uncertainOptions.allow', async () => {
+      const model = toolUseModel({})
+      const decision = new LLMDecisionModel({ model })
+
+      await expect(
+        decision.ask('x', {
+          q: {
+            question: 'ok?',
+            choices: 'boolean',
+            uncertainOptions: { allow: 'false' as unknown as boolean },
+          },
+        })
+      ).rejects.toThrow(/uncertainOptions.allow must be a boolean/)
+      expect(model.requests).toHaveLength(0)
+    })
+
     it('rejects out-of-range minConfidence', async () => {
       const model = toolUseModel({})
       const decision = new LLMDecisionModel({ model })
@@ -249,9 +281,9 @@ describe('LLMDecisionModel', () => {
       const model = toolUseModel({})
       const decision = new LLMDecisionModel({ model })
 
-      await expect(
-        decision.ask('x', { q: { question: 'pick', choices: ['certain', 'uncertain'] as const } })
-      ).rejects.toThrow(/reserved for the Uncertain answer/)
+      await expect(decision.ask('x', { q: { question: 'pick', choices: ['certain', 'uncertain'] } })).rejects.toThrow(
+        /reserved for the Uncertain answer/
+      )
       expect(model.requests).toHaveLength(0)
     })
 
@@ -259,9 +291,7 @@ describe('LLMDecisionModel', () => {
       const model = toolUseModel({})
       const decision = new LLMDecisionModel({ model })
 
-      await expect(decision.ask('x', { q: { question: 'pick', choices: ['a', 'a'] as const } })).rejects.toThrow(
-        /unique/
-      )
+      await expect(decision.ask('x', { q: { question: 'pick', choices: ['a', 'a'] } })).rejects.toThrow(/unique/)
       expect(model.requests).toHaveLength(0)
     })
 
@@ -280,15 +310,79 @@ describe('LLMDecisionModel', () => {
       const model = toolUseModel({ color: 'purple' })
       const decision = new LLMDecisionModel({ model })
 
-      await expect(
-        decision.ask('x', { color: { question: 'c?', choices: ['red', 'green'] as const } })
-      ).rejects.toThrow(/invalid answer set/)
+      await expect(decision.ask('x', { color: { question: 'c?', choices: ['red', 'green'] } })).rejects.toThrow(
+        /invalid answer set/
+      )
     })
   })
 
   describe('construction', () => {
     it('rejects a non-Model argument', () => {
       expect(() => new LLMDecisionModel({ model: {} as unknown as Model })).toThrow(TypeError)
+    })
+  })
+
+  describe('tracing', () => {
+    let exporter: InMemorySpanExporter
+    let provider: NodeTracerProvider
+
+    beforeAll(() => {
+      exporter = new InMemorySpanExporter()
+      provider = new NodeTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })
+      provider.register()
+    })
+
+    beforeEach(() => {
+      exporter.reset()
+    })
+
+    afterAll(async () => {
+      await provider.forceFlush()
+      await provider.shutdown()
+      trace.disable()
+    })
+
+    it('parents child spans created inside _ask under the decision span', async () => {
+      class ChildSpanModel extends TestModelProvider {
+        override async *stream(_messages: Message[], _options?: StreamOptions): AsyncGenerator<ModelStreamEvent> {
+          const span = trace.getTracer('test').startSpan('child_in_ask')
+          span.end()
+          yield { type: 'modelMessageStartEvent', role: 'assistant' }
+          yield {
+            type: 'modelContentBlockStartEvent',
+            start: { type: 'toolUseStart', name: STRUCTURED_OUTPUT_TOOL_NAME, toolUseId: 'd' },
+          }
+          yield {
+            type: 'modelContentBlockDeltaEvent',
+            delta: { type: 'toolUseInputDelta', input: JSON.stringify({ q: { answer: 'true' } }) },
+          }
+          yield { type: 'modelContentBlockStopEvent' }
+          yield { type: 'modelMessageStopEvent', stopReason: 'toolUse' }
+          yield { type: 'modelMetadataEvent', usage: DEFAULT_USAGE, metrics: { latencyMs: 1 } }
+        }
+      }
+      const decision = new LLMDecisionModel({ model: new ChildSpanModel() })
+
+      await decision.ask('x', { q: { question: 'ok?', choices: 'boolean' } })
+
+      const spans = exporter.getFinishedSpans()
+      const decisionSpan = spans.find((s) => s.name === 'decision')
+      const childSpan = spans.find((s) => s.name === 'child_in_ask')
+      expect(decisionSpan).toBeDefined()
+      expect(childSpan).toBeDefined()
+      expect(childSpan!.parentSpanContext?.spanId).toBe(decisionSpan!.spanContext().spanId)
+    })
+
+    it('runs when there is no active parent span', async () => {
+      const model = toolUseModel({ q: 'true' })
+      const decision = new LLMDecisionModel({ model })
+
+      // No surrounding span — just verify the decision span is created as a root.
+      await context.with(context.active(), () => decision.ask('x', { q: { question: 'ok?', choices: 'boolean' } }))
+
+      const decisionSpan = exporter.getFinishedSpans().find((s) => s.name === 'decision')
+      expect(decisionSpan).toBeDefined()
+      expect(decisionSpan!.parentSpanContext).toBeUndefined()
     })
   })
 })
