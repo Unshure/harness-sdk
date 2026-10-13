@@ -727,6 +727,23 @@ describe('fileEditor tool', () => {
         'does not exist in the sandbox'
       )
     })
+
+    it('trips the config error on every call after root is deleted', async () => {
+      // Guards #3235: a root deleted after a successful first probe must
+      // still raise the clear configuration error on later calls, not
+      // surface as a generic "path does not exist" on whatever child the
+      // model tries next.
+      const root = path.join(testDir, 'workspace')
+      await fs.mkdir(root, { recursive: true })
+      const inner = path.join(root, 'a.txt')
+      await fs.writeFile(inner, 'hello', 'utf-8')
+      const editor = makeFileEditor({ root })
+      await editor.invoke({ command: 'view', path: inner }, context)
+      await fs.rm(root, { recursive: true, force: true })
+      await expect(editor.invoke({ command: 'view', path: inner }, context)).rejects.toThrow(
+        'does not exist in the sandbox'
+      )
+    })
   })
 
   describe('undo LRU eviction', () => {
@@ -743,6 +760,20 @@ describe('fileEditor tool', () => {
       // Second-oldest still restores.
       await editor.invoke({ command: 'undo_edit', path: paths[1]! }, context)
       expect(await fs.readFile(paths[1]!, 'utf-8')).toBe('orig1')
+    })
+
+    it('preserves the just-inserted entry when it alone exceeds the byte cap', async () => {
+      // Guards #3235: an edit whose snapshot alone exceeds `maxUndoBytes`
+      // must still be undoable. The byte cap is best-effort when a single
+      // snapshot is larger than the whole budget.
+      const editor = makeFileEditor({ maxUndoBytes: 10 })
+      const filePath = await createTestFile('big.txt', 'x'.repeat(100))
+      await editor.invoke(
+        { command: 'str_replace', path: filePath, old_str: 'x', new_str: 'X', replace_all: true },
+        context
+      )
+      await editor.invoke({ command: 'undo_edit', path: filePath }, context)
+      expect(await fs.readFile(filePath, 'utf-8')).toBe('x'.repeat(100))
     })
 
     it('evicts past the byte cap', async () => {
@@ -806,6 +837,15 @@ describe('fileEditor tool', () => {
       const filePath = await createTestFile('many.txt', 'hit line\n'.repeat(300))
       const result = await fileEditor.invoke({ command: 'find_line', path: filePath, search_text: 'hit' }, context)
       expect(result).toContain('truncated')
+    })
+
+    it('does not mark the result truncated when hits equal the cap exactly', async () => {
+      // Guards #3235: with exactly the cap of matches, every hit is
+      // returned, so the reply must not claim truncation.
+      const MAX_FIND_LINE_HITS = 200
+      const filePath = await createTestFile('exact.txt', 'hit line\n'.repeat(MAX_FIND_LINE_HITS))
+      const result = await fileEditor.invoke({ command: 'find_line', path: filePath, search_text: 'hit' }, context)
+      expect(result).not.toContain('truncated')
     })
 
     it('fuzzy search is linear on pathological input', async () => {

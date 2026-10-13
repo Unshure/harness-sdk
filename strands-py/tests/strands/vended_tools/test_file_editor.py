@@ -629,6 +629,23 @@ class TestMissingRoot:
         with pytest.raises(ValueError, match="does not exist in the sandbox"):
             await e(command="view", path=f"{missing_root}/foo.txt", tool_context=ctx)
 
+    @pytest.mark.asyncio
+    async def test_deleted_root_trips_config_error_on_every_call(self, ctx, tmp_path):
+        # Guards #3235: a root deleted after a successful first probe must
+        # still raise the clear configuration error on later calls, not
+        # surface as a generic "path does not exist" on whatever child the
+        # model tries next.
+        root = tmp_path / "workspace"
+        root.mkdir()
+        inner = _write(root / "a.txt", "hello")
+        e = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
+        await e(command="view", path=inner, tool_context=ctx)
+        # Remove the root; the next call must surface the config error.
+        (root / "a.txt").unlink()
+        root.rmdir()
+        with pytest.raises(ValueError, match="does not exist in the sandbox"):
+            await e(command="view", path=inner, tool_context=ctx)
+
 
 class TestUndoLRUEviction:
     """The undo history is a bounded LRU: it must evict on overflow."""
@@ -646,6 +663,20 @@ class TestUndoLRUEviction:
         # Two most recent still restore.
         await e(command="undo_edit", path=paths[1], tool_context=ctx)
         assert (tmp_path / "f1.txt").read_text() == "orig1"
+
+    @pytest.mark.asyncio
+    async def test_preserves_just_inserted_entry_when_it_alone_exceeds_byte_cap(self, ctx, tmp_path):
+        # Guards #3235: an edit whose snapshot alone exceeds `max_undo_bytes`
+        # must still be undoable. The byte cap is best-effort when a single
+        # snapshot is larger than the whole budget.
+        tiny_cap = 10
+        e = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_undo_bytes=tiny_cap)
+        file_path = _write(tmp_path / "big.txt", "x" * 100)
+        await e(command="str_replace", path=file_path, tool_context=ctx, old_str="x", new_str="X", replace_all=True)
+        # The snapshot (100 bytes) alone busts the 10-byte cap; the editor
+        # still keeps it so undo works.
+        await e(command="undo_edit", path=file_path, tool_context=ctx)
+        assert (tmp_path / "big.txt").read_text() == "x" * 100
 
     @pytest.mark.asyncio
     async def test_evicts_past_byte_cap(self, ctx, tmp_path):
@@ -747,6 +778,17 @@ class TestFindLine:
         file_path = _write(tmp_path / "test.txt", content)
         result = await editor(command="find_line", path=file_path, tool_context=ctx, search_text="hit")
         assert "truncated" in result
+
+    @pytest.mark.asyncio
+    async def test_exact_cap_hits_is_not_marked_truncated(self, editor, ctx, tmp_path):
+        # Guards #3235: with exactly the cap of matches, every hit is
+        # returned, so the reply must not claim truncation.
+        from strands.vended_tools.file_editor.file_editor import _MAX_FIND_LINE_HITS
+
+        content = "\n".join("hit line" for _ in range(_MAX_FIND_LINE_HITS)) + "\n"
+        file_path = _write(tmp_path / "test.txt", content)
+        result = await editor(command="find_line", path=file_path, tool_context=ctx, search_text="hit")
+        assert "truncated" not in result
 
     @pytest.mark.asyncio
     async def test_fuzzy_search_is_linear_on_pathological_input(self, editor, ctx, tmp_path):

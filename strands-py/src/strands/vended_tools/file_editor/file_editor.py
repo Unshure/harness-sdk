@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import posixpath
 from typing import TYPE_CHECKING, Literal
-from weakref import WeakSet
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
@@ -111,20 +110,17 @@ def make_file_editor(
     if normalized_root is not None and description is DEFAULT_FILE_EDITOR_DESCRIPTION:
         description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
 
-    # Sandboxes already verified to contain `root`. WeakSet so a sandbox that
-    # goes out of scope does not pin the cache entry.
-    verified_sandboxes: WeakSet[Sandbox] = WeakSet()
-
     async def _verify_root(active: Sandbox) -> None:
-        if normalized_root is None or active in verified_sandboxes:
+        # Probed on every call rather than memoized: a root that is deleted
+        # after an earlier successful probe must still trip the clear
+        # configuration error, not surface as a generic "path does not exist"
+        # on whatever child the model tries next.
+        if normalized_root is None:
             return
         try:
             await active.list_files(normalized_root)
         except SandboxPathNotFoundError as error:
-            raise ValueError(
-                f"Invalid configuration: root {normalized_root} does not exist in the sandbox."
-            ) from error
-        verified_sandboxes.add(active)
+            raise ValueError(f"Invalid configuration: root {normalized_root} does not exist in the sandbox.") from error
 
     @tool(name=name, description=description, context="tool_context")
     async def file_editor_tool(
@@ -229,7 +225,7 @@ def _resolve_path(file_path: str, root: str | None) -> str:
     Raises:
         ValueError: On non-absolute paths or out-of-root resolution.
     """
-    stripped = file_path.rstrip("/") or file_path
+    stripped = file_path.rstrip("/\\") or file_path
 
     if not posixpath.isabs(stripped):
         suggested = posixpath.abspath(stripped)
@@ -488,7 +484,12 @@ def _store_undo_snapshot(
         del undo_history[file_path]
     undo_history[file_path] = content
     total_bytes = sum(len(v.encode("utf-8")) for v in undo_history.values())
-    while undo_history and (len(undo_history) > max_entries or total_bytes > max_bytes):
+    # Preserve the just-inserted entry: an edit whose snapshot alone exceeds
+    # `max_bytes` would otherwise evict every older entry and then itself,
+    # leaving the user with no undo for a write we already reported as
+    # successful. The byte cap is best-effort when a single snapshot is larger
+    # than the whole budget.
+    while len(undo_history) > 1 and (len(undo_history) > max_entries or total_bytes > max_bytes):
         oldest_key = next(iter(undo_history))
         evicted = undo_history.pop(oldest_key)
         total_bytes -= len(evicted.encode("utf-8"))
@@ -719,14 +720,18 @@ async def _handle_find_line(
 
     file_content = await _read_text_or_reject_binary(sandbox, file_path, max_size)
 
-    hits = _find_line_numbers(file_content, search_text, fuzzy, cap=_MAX_FIND_LINE_HITS)
+    # Scan one past the cap so the handler can distinguish "exactly cap matches"
+    # (not truncated) from "cap or more matches" (truncated). Truncating the
+    # list for display happens here, not inside `_find_line_numbers`.
+    hits = _find_line_numbers(file_content, search_text, fuzzy, cap=_MAX_FIND_LINE_HITS + 1)
     if not hits:
         return f"No matches for `{search_text}` in {file_path}."
 
+    truncated = len(hits) > _MAX_FIND_LINE_HITS
+    if truncated:
+        hits = hits[:_MAX_FIND_LINE_HITS]
     line_numbers = [index + 1 for index in hits]
-    truncated_note = (
-        f" (truncated to first {_MAX_FIND_LINE_HITS} hits)" if len(hits) == _MAX_FIND_LINE_HITS else ""
-    )
+    truncated_note = f" (truncated to first {_MAX_FIND_LINE_HITS} hits)" if truncated else ""
 
     first = hits[0]
     lines = file_content.split("\n")

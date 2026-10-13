@@ -142,12 +142,12 @@ export function makeFileEditor(
   const normalizedRoot: string | undefined =
     options.root === undefined ? undefined : stripTrailingSep(path.normalize(options.root))
 
-  // Sandboxes already verified to contain `root`. WeakSet so a sandbox that
-  // goes out of scope does not pin the cache entry.
-  const verifiedSandboxes = new WeakSet<Sandbox>()
-
   async function verifyRoot(sandbox: Sandbox): Promise<void> {
-    if (normalizedRoot === undefined || verifiedSandboxes.has(sandbox)) return
+    // Probed on every call rather than memoized: a root that is deleted after
+    // an earlier successful probe must still trip the clear configuration
+    // error, not surface as a generic "path does not exist" on whatever child
+    // the model tries next.
+    if (normalizedRoot === undefined) return
     try {
       await sandbox.listFiles(normalizedRoot)
     } catch (error) {
@@ -158,7 +158,6 @@ export function makeFileEditor(
       }
       throw error
     }
-    verifiedSandboxes.add(sandbox)
   }
 
   const description =
@@ -395,7 +394,7 @@ function buildStrReplaceResult(
 ): { newContent: string; snippet: string; startLine: number; count: number } {
   const newStrValue = newStr ?? ''
 
-  const occurrences = (originalContent.match(new RegExp(escapeRegExp(oldStr), 'g')) || []).length
+  const occurrences = originalContent.split(oldStr).length - 1
   if (occurrences === 0) {
     throw new Error(`No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${filePath}.`)
   }
@@ -485,10 +484,6 @@ function makeOutput(fileContent: string, fileDescriptor: string, initLine: numbe
   return `Here's the result of running \`cat -n\` on ${fileDescriptor}:\n${numberedLines.join('\n')}\n`
 }
 
-function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
 /**
  * Return every 0-indexed line where `searchText` matches, capped at `cap` hits.
  *
@@ -567,7 +562,12 @@ function storeUndoSnapshot(
   let totalBytes = 0
   for (const value of Object.values(undoHistory)) totalBytes += Buffer.byteLength(value, 'utf-8')
   let keys = Object.keys(undoHistory)
-  while (keys.length > 0 && (keys.length > maxEntries || totalBytes > maxBytes)) {
+  // Preserve the just-inserted entry: an edit whose snapshot alone exceeds
+  // `maxBytes` would otherwise evict every older entry and then itself,
+  // leaving the user with no undo for a write we already reported as
+  // successful. The byte cap is best-effort when a single snapshot is larger
+  // than the whole budget.
+  while (keys.length > 1 && (keys.length > maxEntries || totalBytes > maxBytes)) {
     const oldestKey = keys[0]!
     const evicted = undoHistory[oldestKey]!
     delete undoHistory[oldestKey]
@@ -701,10 +701,7 @@ async function handleCreate(
   if (fileText === undefined) {
     throw new Error('Parameter `file_text` is required for command: create')
   }
-  const writeBytes = Buffer.byteLength(fileText, 'utf-8')
-  if (writeBytes > maxSize) {
-    throw new Error(`file_text (${writeBytes} bytes) exceeds maximum allowed size (${maxSize} bytes)`)
-  }
+  rejectOversizeReplacement(fileText, maxSize, 'file_text')
 
   const { exists } = await probeSandboxPath(sandbox, filePath)
   if (exists) {
@@ -821,13 +818,17 @@ async function handleFindLine(
 
   const fileContent = await readTextOrRejectBinary(sandbox, filePath, maxSize)
 
-  const hits = findLineNumbers(fileContent, searchText, fuzzy, MAX_FIND_LINE_HITS)
-  if (hits.length === 0) {
+  // Scan one past the cap so the handler can distinguish "exactly cap matches"
+  // (not truncated) from "cap or more matches" (truncated).
+  const rawHits = findLineNumbers(fileContent, searchText, fuzzy, MAX_FIND_LINE_HITS + 1)
+  if (rawHits.length === 0) {
     return `No matches for \`${searchText}\` in ${filePath}.`
   }
 
+  const truncated = rawHits.length > MAX_FIND_LINE_HITS
+  const hits = truncated ? rawHits.slice(0, MAX_FIND_LINE_HITS) : rawHits
   const lineNumbers = hits.map((index) => index + 1)
-  const truncatedNote = hits.length === MAX_FIND_LINE_HITS ? ` (truncated to first ${MAX_FIND_LINE_HITS} hits)` : ''
+  const truncatedNote = truncated ? ` (truncated to first ${MAX_FIND_LINE_HITS} hits)` : ''
 
   const first = hits[0]!
   const lines = fileContent.split('\n')
