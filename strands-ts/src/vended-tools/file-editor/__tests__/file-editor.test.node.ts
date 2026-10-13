@@ -802,6 +802,19 @@ describe('fileEditor tool', () => {
         fileEditor.invoke({ command: 'str_replace', path: filePath, old_str: '', new_str: 'X' }, context)
       ).rejects.toThrow('must not be empty')
     })
+
+    it('rejects an empty search_text on find_line in both modes', async () => {
+      // Non-fuzzy's `includes` matches every line against an empty string
+      // while fuzzy's token split matches nothing; the modes disagree, so
+      // the tool rejects empty input up front.
+      const filePath = await createTestFile('empty-search.txt', 'one\ntwo\nthree\n')
+      await expect(
+        fileEditor.invoke({ command: 'find_line', path: filePath, search_text: '' }, context)
+      ).rejects.toThrow('must not be empty')
+      await expect(
+        fileEditor.invoke({ command: 'find_line', path: filePath, search_text: '', fuzzy: true }, context)
+      ).rejects.toThrow('must not be empty')
+    })
   })
 
   describe('missing root', () => {
@@ -1042,6 +1055,41 @@ describe('fileEditor tool', () => {
       // Original snapshot survived; the failed second edit did not shadow it.
       await editor.invoke({ command: 'undo_edit', path: filePath }, context)
       expect(await fs.readFile(filePath, 'utf-8')).toBe('original\n')
+    })
+
+    it('does not lose snapshots when mutating calls on one agent run concurrently', async () => {
+      // Guards against the per-agent undo-history race: two concurrent
+      // mutating calls read a stale snapshot, write their result, and the
+      // last finally overwrites the first entry. Each call must observe
+      // the other's snapshot and both files must stay undoable.
+      const editor = makeFileEditor()
+      const fileA = await createTestFile('race-a.txt', 'A-original\n')
+      const fileB = await createTestFile('race-b.txt', 'B-original\n')
+
+      const sandbox = context.agent.sandbox
+      const originalWriteText = sandbox.writeText.bind(sandbox)
+      // Force a microtask yield so Promise.all interleaves the two handlers
+      // past the state read; without serialization they would both snapshot
+      // an empty undo history and the later finally would overwrite the
+      // earlier one.
+      sandbox.writeText = async (p: string, content: string): Promise<void> => {
+        await new Promise((resolve) => setTimeout(resolve, 0))
+        return originalWriteText(p, content)
+      }
+
+      try {
+        await Promise.all([
+          editor.invoke({ command: 'str_replace', path: fileA, old_str: 'A-original', new_str: 'A-changed' }, context),
+          editor.invoke({ command: 'str_replace', path: fileB, old_str: 'B-original', new_str: 'B-changed' }, context),
+        ])
+      } finally {
+        sandbox.writeText = originalWriteText
+      }
+
+      await editor.invoke({ command: 'undo_edit', path: fileA }, context)
+      await editor.invoke({ command: 'undo_edit', path: fileB }, context)
+      expect(await fs.readFile(fileA, 'utf-8')).toBe('A-original\n')
+      expect(await fs.readFile(fileB, 'utf-8')).toBe('B-original\n')
     })
 
     it('keeps the undo entry when a restoring write fails so it can be retried', async () => {

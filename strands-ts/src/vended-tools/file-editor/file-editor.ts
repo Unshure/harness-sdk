@@ -96,6 +96,15 @@ export const DEFAULT_UNDO_STATE_KEY = 'file_editor.undo_history'
 
 const MUTATING_COMMANDS = new Set(['create', 'str_replace', 'insert', 'undo_edit'])
 
+/**
+ * A pre-edit snapshot plus its cached UTF-8 byte length. Caching the count
+ * avoids re-encoding every stored value when enforcing `maxUndoBytes`.
+ */
+interface UndoEntry {
+  content: string
+  bytes: number
+}
+
 export interface MakeFileEditorOptions {
   name?: string
   description?: string
@@ -174,6 +183,26 @@ export function makeFileEditor(
   // goes out of scope does not pin the cache entry.
   const verifiedSandboxes = new WeakSet<Sandbox>()
 
+  // Per-agent serialization of the undo-history read-modify-write. Two
+  // concurrent mutating tool calls on the same agent would otherwise each
+  // snapshot the pre-call history, run their sandbox write, and overwrite
+  // each other in the finally; chaining the mutating path through this
+  // promise keeps the whole mutate step atomic. WeakMap keyed on the agent
+  // object so an agent going out of scope does not pin the chain.
+  const undoChains = new WeakMap<object, Promise<void>>()
+  function serializeUndo<T>(agent: object, run: () => Promise<T>): Promise<T> {
+    const previous = undoChains.get(agent) ?? Promise.resolve()
+    const next = previous.then(run, run)
+    undoChains.set(
+      agent,
+      next.then(
+        () => undefined,
+        () => undefined
+      )
+    )
+    return next
+  }
+
   async function verifyRoot(sandbox: Sandbox): Promise<void> {
     if (normalizedRoot === undefined || verifiedSandboxes.has(sandbox)) return
     try {
@@ -205,22 +234,14 @@ export function makeFileEditor(
       await verifyRoot(sandbox)
       const filePath = resolvePath(input.path, normalizedRoot)
 
-      // Only mutating commands touch undo history, so read-only paths skip
-      // the state load/save (which deep-copies and JSON-validates).
-      const mutatesUndo = MUTATING_COMMANDS.has(input.command)
-      const appState = mutatesUndo ? context.agent.appState : undefined
-      const undoHistory: Record<string, string> = mutatesUndo
-        ? ((appState?.get(undoStateKey) as Record<string, string> | undefined) ?? {})
-        : {}
-
-      try {
+      const dispatch = (undoHistory: Record<string, UndoEntry>): Promise<string | ToolResultBlockData> => {
         switch (input.command) {
           case 'view':
-            return await handleView(sandbox, filePath, input.view_range, maxFileSize, context.toolUse.toolUseId)
+            return handleView(sandbox, filePath, input.view_range, maxFileSize, context.toolUse.toolUseId)
           case 'create':
-            return await handleCreate(sandbox, filePath, input.file_text!, undoHistory, maxFileSize)
+            return handleCreate(sandbox, filePath, input.file_text!, undoHistory, maxFileSize)
           case 'str_replace':
-            return await handleStrReplace(
+            return handleStrReplace(
               sandbox,
               filePath,
               input.old_str!,
@@ -232,7 +253,7 @@ export function makeFileEditor(
               maxUndoBytes
             )
           case 'insert':
-            return await handleInsert(
+            return handleInsert(
               sandbox,
               filePath,
               input.insert_line!,
@@ -243,19 +264,33 @@ export function makeFileEditor(
               maxUndoBytes
             )
           case 'find_line':
-            return await handleFindLine(sandbox, filePath, input.search_text!, input.fuzzy === true, maxFileSize)
+            return handleFindLine(sandbox, filePath, input.search_text!, input.fuzzy === true, maxFileSize)
           case 'undo_edit':
-            return await handleUndo(sandbox, filePath, undoHistory)
+            return handleUndo(sandbox, filePath, undoHistory)
           default:
             throw new Error(`Unknown command: ${(input as { command: string }).command}`)
         }
-      } finally {
-        if (appState !== undefined) {
-          // Handlers only mutate after a successful sandbox write, so
-          // persisting on the exception path is safe.
-          appState.set(undoStateKey, undoHistory)
-        }
       }
+
+      // Only mutating commands touch undo history, so read-only paths skip
+      // the state load/save (which deep-copies and JSON-validates) and run
+      // concurrently without serializing on the per-agent chain.
+      if (!MUTATING_COMMANDS.has(input.command)) {
+        return dispatch({})
+      }
+
+      return serializeUndo(context.agent, async () => {
+        const appState = context.agent.appState
+        const undoHistory: Record<string, UndoEntry> =
+          (appState.get(undoStateKey) as Record<string, UndoEntry> | undefined) ?? {}
+        // Handlers only touch undoHistory after a successful sandbox write
+        // and never throw after mutating, so a thrown error leaves the map
+        // unchanged — no need to re-deepcopy up to maxUndoBytes of history
+        // to persist a no-op.
+        const result = await dispatch(undoHistory)
+        appState.set(undoStateKey, undoHistory)
+        return result
+      })
     },
   })
 }
@@ -527,11 +562,9 @@ function findLineNumbers(content: string, searchText: string, fuzzy: boolean, ca
   const lines = content.split('\n')
   const hits: number[] = []
   if (fuzzy) {
-    // Whitespace-tolerant, case-insensitive: match tokens in order using a
-    // linear ordered-subsequence scan. A previous implementation joined
-    // tokens with a regex `.*` chain, which is O(line_length**tokens)
-    // against long single-line content and cannot be interrupted because
-    // V8 has no in-exec regex timeout and holds the event loop.
+    // Linear ordered-subsequence scan over the whitespace-split tokens:
+    // O(line_length) per line, so the event loop stays responsive even on
+    // pathologically long single-line content.
     const tokens = searchText
       .trim()
       .split(/\s+/)
@@ -581,7 +614,7 @@ function findLineNumbers(content: string, searchText: string, fuzzy: boolean, ca
  * so a failed write does not overwrite a still-valid earlier snapshot.
  */
 function storeUndoSnapshot(
-  undoHistory: Record<string, string>,
+  undoHistory: Record<string, UndoEntry>,
   filePath: string,
   content: string,
   maxEntries: number,
@@ -591,15 +624,18 @@ function storeUndoSnapshot(
   // keys are absolute (start with `/` or a drive letter), so no integer-key
   // reordering applies and iteration order equals insertion order.
   if (filePath in undoHistory) delete undoHistory[filePath]
-  undoHistory[filePath] = content
+  // Encode only the new content; every other entry already carries its
+  // cached byte length so the budget check reads cached integers.
+  const newBytes = Buffer.byteLength(content, 'utf-8')
+  undoHistory[filePath] = { content, bytes: newBytes }
   let totalBytes = 0
-  for (const value of Object.values(undoHistory)) totalBytes += Buffer.byteLength(value, 'utf-8')
+  for (const entry of Object.values(undoHistory)) totalBytes += entry.bytes
   let keys = Object.keys(undoHistory)
   while (keys.length > 0 && (keys.length > maxEntries || totalBytes > maxBytes)) {
     const oldestKey = keys[0]!
     const evicted = undoHistory[oldestKey]!
     delete undoHistory[oldestKey]
-    totalBytes -= Buffer.byteLength(evicted, 'utf-8')
+    totalBytes -= evicted.bytes
     keys = Object.keys(undoHistory)
   }
 }
@@ -758,16 +794,13 @@ async function handleCreate(
   sandbox: Sandbox,
   filePath: string,
   fileText: string,
-  undoHistory: Record<string, string>,
+  undoHistory: Record<string, UndoEntry>,
   maxSize: number
 ): Promise<string> {
   if (fileText === undefined) {
     throw new Error('Parameter `file_text` is required for command: create')
   }
-  const writeBytes = Buffer.byteLength(fileText, 'utf-8')
-  if (writeBytes > maxSize) {
-    throw new Error(`file_text (${writeBytes} bytes) exceeds maximum allowed size (${maxSize} bytes)`)
-  }
+  rejectOversizeReplacement(fileText, maxSize, 'file_text')
 
   const { exists } = await probeSandboxPath(sandbox, filePath)
   if (exists) {
@@ -789,7 +822,7 @@ async function handleStrReplace(
   newStr: string | undefined,
   replaceAll: boolean,
   maxSize: number,
-  undoHistory: Record<string, string>,
+  undoHistory: Record<string, UndoEntry>,
   maxUndoEntries: number,
   maxUndoBytes: number
 ): Promise<string> {
@@ -835,7 +868,7 @@ async function handleInsert(
   insertLine: number,
   newStr: string,
   maxSize: number,
-  undoHistory: Record<string, string>,
+  undoHistory: Record<string, UndoEntry>,
   maxUndoEntries: number,
   maxUndoBytes: number
 ): Promise<string> {
@@ -872,6 +905,12 @@ async function handleFindLine(
 ): Promise<string> {
   if (searchText === undefined) {
     throw new Error('Parameter `search_text` is required for command: find_line')
+  }
+  if (searchText === '') {
+    // Non-fuzzy's `includes` and fuzzy's token split disagree on the empty
+    // string: `line.includes('')` matches every line, while splitting
+    // yields no tokens and matches nothing. Reject up front.
+    throw new Error('Parameter `search_text` must not be empty for command: find_line')
   }
 
   const { exists, isDir } = await probeSandboxPath(sandbox, filePath)
@@ -910,12 +949,12 @@ async function handleFindLine(
  * The snapshot stays in history until the restoring write succeeds so a
  * transient sandbox failure leaves undo retryable.
  */
-async function handleUndo(sandbox: Sandbox, filePath: string, undoHistory: Record<string, string>): Promise<string> {
+async function handleUndo(sandbox: Sandbox, filePath: string, undoHistory: Record<string, UndoEntry>): Promise<string> {
   const previous = undoHistory[filePath]
   if (previous === undefined) {
     throw new Error(`No undo history available for ${filePath} in this session.`)
   }
-  await sandbox.writeText(filePath, previous)
+  await sandbox.writeText(filePath, previous.content)
   delete undoHistory[filePath]
   return `Reverted ${filePath} to its previous in-memory snapshot.`
 }
