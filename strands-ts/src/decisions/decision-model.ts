@@ -2,7 +2,7 @@
  * Base interface for making structured "decisions" from inside the SDK.
  */
 
-import { SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
+import { context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
 
 import { getServiceName } from '../telemetry/utils.js'
 import type { DecisionInput, DecisionResult, Question } from './types.js'
@@ -37,13 +37,14 @@ export abstract class DecisionModel {
     span.addEvent('gen_ai.decision.questions', { ids: Object.keys(questions) })
 
     try {
-      const result = await this._ask(state, questions)
+      const result = await context.with(trace.setSpan(context.active(), span), () => this._ask(state, questions))
 
-      span.setAttributes({
-        'gen_ai.usage.input_tokens': result.usage.inputTokens,
-        'gen_ai.usage.output_tokens': result.usage.outputTokens,
-        'gen_ai.decision.latency_ms': result.metadata.latencyMs,
-      })
+      const spanAttributes: Record<string, number> = { 'gen_ai.decision.latency_ms': result.metadata.latencyMs }
+      if (result.usage !== undefined) {
+        spanAttributes['gen_ai.usage.input_tokens'] = result.usage.inputTokens
+        spanAttributes['gen_ai.usage.output_tokens'] = result.usage.outputTokens
+      }
+      span.setAttributes(spanAttributes)
 
       span.addEvent('gen_ai.decision.answers', { answers: JSON.stringify(result.answers) })
       span.setStatus({ code: SpanStatusCode.OK })
@@ -91,9 +92,9 @@ function validateQuestions(questions: Record<string, Question>): void {
         throw new Error(`question id=<${id}> | choice 'uncertain' is reserved for the Uncertain answer`)
       }
     }
-    const threshold = question.uncertainOptions?.threshold
-    if (threshold !== undefined && (!Number.isFinite(threshold) || threshold < 0 || threshold > 1)) {
-      throw new Error(`question id=<${id}> | uncertainOptions.threshold must be in [0.0, 1.0]`)
+    const minConfidence = question.uncertainOptions?.minConfidence
+    if (minConfidence !== undefined && (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1)) {
+      throw new Error(`question id=<${id}> | uncertainOptions.minConfidence must be in [0.0, 1.0]`)
     }
   }
 }

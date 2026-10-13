@@ -1,15 +1,15 @@
 import { BedrockModel, LLMDecisionModel } from '@strands-agents/sdk'
 
 async function main() {
-  const decision = new LLMDecisionModel(new BedrockModel())
+  const decision = new LLMDecisionModel({ model: new BedrockModel() })
 
   const questions = {
     color: {
-      instructions: 'What color is the fruit?',
+      question: 'What color is the fruit?',
       choices: ['red', 'yellow', 'blue'] as const,
     },
     isHeavy: {
-      instructions: 'Is the thing talked about heavy?',
+      question: 'Is the thing talked about heavy?',
       choices: 'boolean' as const,
       uncertainOptions: {
         allow: false,

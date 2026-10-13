@@ -26,6 +26,11 @@ const DEFAULT_SYSTEM_PROMPT =
 /** Options for constructing an {@link LLMDecisionModel}. */
 export interface LLMDecisionModelOptions {
   /**
+   * Underlying vended model; must honor forced `toolChoice` so the structured-output
+   * tool is the only possible response. Defaults to a zero-config {@link BedrockModel}.
+   */
+  readonly model?: Model
+  /**
    * System prompt used to frame the decision for the model. The SDK appends
    * mandatory output and prompt-injection rules that the prompt cannot
    * override. Defaults to a generic decision framing.
@@ -42,14 +47,14 @@ export interface LLMDecisionModelOptions {
  *
  * @example
  * ```typescript
- * const decision = new LLMDecisionModel(new BedrockModel())
+ * const decision = new LLMDecisionModel({ model: new BedrockModel() })
  * const result = await decision.ask('The fruit is an apple', {
  *   color: {
- *     instructions: 'What color is the fruit?',
+ *     question: 'What color is the fruit?',
  *     choices: ['red', 'green', 'blue'] as const,
  *   },
  *   isFruit: {
- *     instructions: 'Is the thing talked about a fruit?',
+ *     question: 'Is the thing talked about a fruit?',
  *     choices: 'boolean',
  *     uncertainOptions: { allow: false },
  *   },
@@ -67,15 +72,13 @@ export class LLMDecisionModel extends DecisionModel {
   /**
    * Create an LLM-backed decision model.
    *
-   * @param model - Underlying vended model; must honor forced `toolChoice` so
-   *   the structured-output tool is the only possible response. Defaults to a
-   *   zero-config {@link BedrockModel}.
-   * @param options - Prompt configuration.
-   * @throws TypeError if `model` is not a {@link Model}.
+   * @param options - Model and prompt configuration.
+   * @throws TypeError if `options.model` is not a {@link Model}.
    */
-  constructor(model: Model = new BedrockModel(), options: LLMDecisionModelOptions = {}) {
+  constructor(options: LLMDecisionModelOptions = {}) {
     super()
-    if (!(model instanceof Model)) throw new TypeError('model must be a Model')
+    const model = options.model ?? new BedrockModel()
+    if (!(model instanceof Model)) throw new TypeError('options.model must be a Model')
     this._model = model
     this._systemPrompt = options.systemPrompt ?? DEFAULT_SYSTEM_PROMPT
   }
@@ -121,19 +124,18 @@ export class LLMDecisionModel extends DecisionModel {
     }
 
     const answers = convertAnswers(parsed, questions)
-    const usage = metadata?.usage
-    if (usage === undefined) {
-      throw new Error('decision model returned no usage information')
-    }
     const latencyMs = metadata?.metrics?.latencyMs ?? Math.round(globalThis.performance.now() - startedAt)
+    const usage = metadata?.usage
 
     return {
       answers,
-      usage: {
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        totalTokens: usage.totalTokens,
-      },
+      ...(usage !== undefined && {
+        usage: {
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          totalTokens: usage.totalTokens,
+        },
+      }),
       metadata: { latencyMs },
     }
   }
@@ -151,7 +153,7 @@ function buildAnswerSchema<Q extends Record<string, Question>>(
         answer: z.enum(literals as [string, ...string[]]),
         reason: z.string().optional().describe(`Explanation when answer is '${UNCERTAIN_LITERAL}'; omit otherwise.`),
       })
-      .describe(question.instructions)
+      .describe(question.question)
   }
   return z.object(shape).describe('Answer for each question in the input decision set.')
 }

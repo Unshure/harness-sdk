@@ -81,12 +81,12 @@ describe('LLMDecisionModel', () => {
   describe('ask', () => {
     it('narrows string and bool answers from a successful tool call', async () => {
       const model = toolUseModel({ color: 'red', isFruit: 'true' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       const result = await decision.ask('The fruit is an apple', {
-        color: { instructions: 'What color is the fruit?', choices: ['red', 'green', 'blue'] as const },
+        color: { question: 'What color is the fruit?', choices: ['red', 'green', 'blue'] as const },
         isFruit: {
-          instructions: 'Is the thing talked about a fruit?',
+          question: 'Is the thing talked about a fruit?',
           choices: 'boolean',
           uncertainOptions: { allow: false },
         },
@@ -101,19 +101,19 @@ describe('LLMDecisionModel', () => {
 
     it('falls back to wall-clock latency when the provider omits latency metrics', async () => {
       const model = toolUseModel({ q: 'true' }, { latencyMs: null })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      const result = await decision.ask('x', { q: { instructions: 'ok?', choices: 'boolean' } })
+      const result = await decision.ask('x', { q: { question: 'ok?', choices: 'boolean' } })
 
       expect(result.metadata.latencyMs).toBeGreaterThanOrEqual(0)
     })
 
     it('returns Uncertain when the model picks the uncertain option', async () => {
       const model = toolUseModel({ color: 'uncertain' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       const result = await decision.ask('ambiguous', {
-        color: { instructions: 'color?', choices: ['red', 'green'] as const },
+        color: { question: 'color?', choices: ['red', 'green'] as const },
       })
 
       expect(result.answers.color).toBeInstanceOf(Uncertain)
@@ -121,10 +121,10 @@ describe('LLMDecisionModel', () => {
 
     it('returns Uncertain carrying the model-supplied reason', async () => {
       const model = toolUseModel({ color: { answer: 'uncertain', reason: 'the input mentioned no color' } })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       const result = await decision.ask('ambiguous', {
-        color: { instructions: 'color?', choices: ['red', 'green'] as const },
+        color: { question: 'color?', choices: ['red', 'green'] as const },
       })
 
       const answer = result.answers.color
@@ -134,10 +134,10 @@ describe('LLMDecisionModel', () => {
 
     it('omits uncertain from the enum when a question opts out', async () => {
       const model = toolUseModel({ q: 'yes' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       await decision.ask('state', {
-        q: { instructions: 'ok?', choices: ['yes', 'no'] as const, uncertainOptions: { allow: false } },
+        q: { question: 'ok?', choices: ['yes', 'no'] as const, uncertainOptions: { allow: false } },
       })
 
       const toolSpec = model.options[0]?.toolSpecs?.[0]
@@ -149,9 +149,9 @@ describe('LLMDecisionModel', () => {
 
     it('appends uncertain to the enum by default', async () => {
       const model = toolUseModel({ q: 'uncertain' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await decision.ask('state', { q: { instructions: 'ok?', choices: ['yes', 'no'] as const } })
+      await decision.ask('state', { q: { question: 'ok?', choices: ['yes', 'no'] as const } })
 
       const toolSpec = model.options[0]?.toolSpecs?.[0]
       const schema = toolSpec?.inputSchema as {
@@ -162,18 +162,18 @@ describe('LLMDecisionModel', () => {
 
     it('forces the structured-output tool', async () => {
       const model = toolUseModel({ q: 'true' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await decision.ask('x', { q: { instructions: 'ok?', choices: 'boolean' } })
+      await decision.ask('x', { q: { question: 'ok?', choices: 'boolean' } })
 
       expect(model.options[0]?.toolChoice).toEqual({ tool: { name: STRUCTURED_OUTPUT_TOOL_NAME } })
     })
 
     it('wraps a plain string state as a single user message', async () => {
       const model = toolUseModel({ q: 'true' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await decision.ask('the state', { q: { instructions: 'is this a string?', choices: 'boolean' } })
+      await decision.ask('the state', { q: { question: 'is this a string?', choices: 'boolean' } })
 
       const sent = model.requests[0]!
       expect(sent).toHaveLength(1)
@@ -183,9 +183,9 @@ describe('LLMDecisionModel', () => {
 
     it('wraps a content array as a single user message', async () => {
       const model = toolUseModel({ q: 'true' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await decision.ask([new TextBlock('hello')], { q: { instructions: 'greeting?', choices: 'boolean' } })
+      await decision.ask([new TextBlock('hello')], { q: { question: 'greeting?', choices: 'boolean' } })
 
       const sent = model.requests[0]!
       expect(sent).toHaveLength(1)
@@ -194,7 +194,7 @@ describe('LLMDecisionModel', () => {
 
     it('passes a message history straight through', async () => {
       const model = toolUseModel({ q: 'true' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       const history: Message[] = [
         new Message({ role: 'user', content: [new TextBlock('earlier')] }),
@@ -202,91 +202,93 @@ describe('LLMDecisionModel', () => {
         new Message({ role: 'user', content: [new TextBlock('the real question')] }),
       ]
 
-      await decision.ask(history, { q: { instructions: 'conversation?', choices: 'boolean' } })
+      await decision.ask(history, { q: { question: 'conversation?', choices: 'boolean' } })
 
       expect(model.requests[0]).toBe(history)
     })
 
     it('includes the untrusted-state defense in the system prompt', async () => {
       const model = toolUseModel({ q: 'true' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await decision.ask('x', { q: { instructions: 'ok?', choices: 'boolean' } })
+      await decision.ask('x', { q: { question: 'ok?', choices: 'boolean' } })
 
       expect(model.options[0]?.systemPrompt).toContain('MANDATORY RULES')
     })
 
     it('throws when the model returns a non-tool-use stop', async () => {
       const model = textModel('I refuse')
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await expect(decision.ask('x', { q: { instructions: 'bool?', choices: 'boolean' } })).rejects.toThrow(
+      await expect(decision.ask('x', { q: { question: 'bool?', choices: 'boolean' } })).rejects.toThrow(
         /no structured answers/
       )
     })
 
     it('rejects an empty question map before calling the model', async () => {
       const model = toolUseModel({})
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       await expect(decision.ask('x', {} as Record<string, Question>)).rejects.toThrow(/at least one question/)
       expect(model.requests).toHaveLength(0)
     })
 
-    it('rejects out-of-range thresholds', async () => {
+    it('rejects out-of-range minConfidence', async () => {
       const model = toolUseModel({})
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       await expect(
         decision.ask('x', {
-          q: { instructions: 'bool?', choices: 'boolean', uncertainOptions: { allow: true, threshold: 1.5 } },
+          q: { question: 'bool?', choices: 'boolean', uncertainOptions: { allow: true, minConfidence: 1.5 } },
         })
-      ).rejects.toThrow(/threshold/)
+      ).rejects.toThrow(/minConfidence/)
       expect(model.requests).toHaveLength(0)
     })
 
     it("rejects a choice literally named 'uncertain'", async () => {
       const model = toolUseModel({})
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       await expect(
-        decision.ask('x', { q: { instructions: 'pick', choices: ['certain', 'uncertain'] as const } })
+        decision.ask('x', { q: { question: 'pick', choices: ['certain', 'uncertain'] as const } })
       ).rejects.toThrow(/reserved for the Uncertain answer/)
       expect(model.requests).toHaveLength(0)
     })
 
     it('rejects duplicate option values', async () => {
       const model = toolUseModel({})
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await expect(decision.ask('x', { q: { instructions: 'pick', choices: ['a', 'a'] as const } })).rejects.toThrow(
+      await expect(decision.ask('x', { q: { question: 'pick', choices: ['a', 'a'] as const } })).rejects.toThrow(
         /unique/
       )
       expect(model.requests).toHaveLength(0)
     })
 
-    it('throws when the model omits usage metadata', async () => {
+    it('returns a result without usage when the provider omits it', async () => {
       const model = toolUseModel({ q: 'true' }, { usage: null })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
-      await expect(decision.ask('x', { q: { instructions: 'ok?', choices: 'boolean' } })).rejects.toThrow(
-        /no usage information/
-      )
+      const result = await decision.ask('x', { q: { question: 'ok?', choices: 'boolean' } })
+
+      expect(result.answers.q).toBe(true)
+      expect(result.usage).toBeUndefined()
+      expect(result.metadata.latencyMs).toBeGreaterThanOrEqual(0)
     })
 
     it('throws when the model returns an unknown option', async () => {
       const model = toolUseModel({ color: 'purple' })
-      const decision = new LLMDecisionModel(model)
+      const decision = new LLMDecisionModel({ model })
 
       await expect(
-        decision.ask('x', { color: { instructions: 'c?', choices: ['red', 'green'] as const } })
+        decision.ask('x', { color: { question: 'c?', choices: ['red', 'green'] as const } })
       ).rejects.toThrow(/invalid answer set/)
     })
   })
 
   describe('construction', () => {
     it('rejects a non-Model argument', () => {
-      expect(() => new LLMDecisionModel({} as unknown as Model)).toThrow(TypeError)
+      expect(() => new LLMDecisionModel({ model: {} as unknown as Model })).toThrow(TypeError)
     })
   })
 })

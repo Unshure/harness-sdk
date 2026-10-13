@@ -16,7 +16,8 @@ const providers: readonly DecisionModelProvider[] = [
   {
     name: 'LLMDecisionModel(BedrockModel)',
     skip: bedrock.skip,
-    create: () => new LLMDecisionModel(bedrock.createModel({ modelId: BEDROCK_HAIKU_MODEL_ID, maxTokens: 512 })),
+    create: () =>
+      new LLMDecisionModel({ model: bedrock.createModel({ modelId: BEDROCK_HAIKU_MODEL_ID, maxTokens: 512 }) }),
   },
 ]
 
@@ -31,9 +32,9 @@ describe.each(providers)('DecisionModel Integration Tests ($name)', (provider) =
         const decision = provider.create()
 
         const result = await decision.ask('The fruit is a ripe banana.', {
-          color: { instructions: 'What color is the fruit?', choices: ['red', 'yellow', 'blue'] as const },
+          color: { question: 'What color is the fruit?', choices: ['red', 'yellow', 'blue'] as const },
           isFruit: {
-            instructions: 'Is the thing described a fruit?',
+            question: 'Is the thing described a fruit?',
             choices: 'boolean',
             uncertainOptions: { allow: false },
           },
@@ -41,8 +42,8 @@ describe.each(providers)('DecisionModel Integration Tests ($name)', (provider) =
 
         expect(result.answers.color).toBe('yellow')
         expect(result.answers.isFruit).toBe(true)
-        expect(result.usage.inputTokens).toBeGreaterThan(0)
-        expect(result.usage.outputTokens).toBeGreaterThan(0)
+        expect(result.usage?.inputTokens).toBeGreaterThan(0)
+        expect(result.usage?.outputTokens).toBeGreaterThan(0)
         expect(result.metadata.latencyMs).toBeGreaterThan(0)
       }
     )
@@ -54,7 +55,7 @@ describe.each(providers)('DecisionModel Integration Tests ($name)', (provider) =
         const decision = provider.create()
 
         const result = await decision.ask('There is a round object on the table.', {
-          color: { instructions: 'What color is the object?', choices: ['red', 'green', 'blue'] as const },
+          color: { question: 'What color is the object?', choices: ['red', 'green', 'blue'] as const },
         })
 
         expect(result.answers.color).toBeInstanceOf(Uncertain)

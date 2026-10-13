@@ -26,8 +26,8 @@ export type DecisionInput = string | ContentBlock[] | Message[]
  *   so TypeScript keeps the literal types.
  */
 export interface Question<C extends 'boolean' | readonly string[] = 'boolean' | readonly string[]> {
-  /** Natural-language description of the question, surfaced to the implementation. */
-  instructions: string
+  /** The question posed to the model, in natural language. */
+  question: string
   /** Answer shape: `'boolean'` or a non-empty readonly tuple of string literals. */
   choices: C
   /** Uncertainty configuration for this question. */
@@ -39,7 +39,7 @@ export interface Question<C extends 'boolean' | readonly string[] = 'boolean' | 
      * Read only by implementations that return per-answer confidence (e.g.
      * System One models); ignored by {@link LLMDecisionModel}.
      */
-    threshold?: number
+    minConfidence?: number
   }
 }
 
@@ -81,8 +81,8 @@ export type AnswerOf<Q> =
 export interface DecisionResult<Q extends Record<string, Question> = Record<string, Question>> {
   /** Per-question answer, statically narrowed from each question's `choices`. */
   answers: { [K in keyof Q]: AnswerOf<Q[K]> }
-  /** Aggregate token usage for the underlying model call(s). */
-  usage: {
+  /** Aggregate token usage for the underlying model call(s), when the provider reports it. */
+  usage?: {
     inputTokens: number
     outputTokens: number
     totalTokens: number
