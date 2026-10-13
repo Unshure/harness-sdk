@@ -88,7 +88,7 @@ describe('LLMDecisionModel', () => {
         isFruit: {
           question: 'Is the thing talked about a fruit?',
           choices: 'boolean',
-          uncertainOptions: { allow: false },
+          uncertainty: false,
         },
       })
 
@@ -137,7 +137,7 @@ describe('LLMDecisionModel', () => {
       const decision = new LLMDecisionModel({ model })
 
       await decision.ask('state', {
-        q: { question: 'ok?', choices: ['yes', 'no'], uncertainOptions: { allow: false } },
+        q: { question: 'ok?', choices: ['yes', 'no'], uncertainty: false },
       })
 
       const toolSpec = model.options[0]?.toolSpecs?.[0]
@@ -246,7 +246,7 @@ describe('LLMDecisionModel', () => {
       expect(model.requests).toHaveLength(0)
     })
 
-    it('rejects a non-boolean uncertainOptions.allow', async () => {
+    it('rejects an uncertainty value that is neither boolean nor object', async () => {
       const model = toolUseModel({})
       const decision = new LLMDecisionModel({ model })
 
@@ -255,10 +255,10 @@ describe('LLMDecisionModel', () => {
           q: {
             question: 'ok?',
             choices: 'boolean',
-            uncertainOptions: { allow: 'false' as unknown as boolean },
+            uncertainty: 'false' as unknown as boolean,
           },
         })
-      ).rejects.toThrow(/uncertainOptions.allow must be a boolean/)
+      ).rejects.toThrow(/uncertainty must be a boolean or { minConfidence\? } object/)
       expect(model.requests).toHaveLength(0)
     })
 
@@ -268,9 +268,9 @@ describe('LLMDecisionModel', () => {
 
       await expect(
         decision.ask('x', {
-          q: { question: 'bool?', choices: 'boolean', uncertainOptions: { allow: true, minConfidence: 1.5 } },
+          q: { question: 'bool?', choices: 'boolean', uncertainty: { minConfidence: 1.5 } },
         })
-      ).rejects.toThrow(/minConfidence/)
+      ).rejects.toThrow(/uncertainty.minConfidence must be in \[0.0, 1.0\]/)
       expect(model.requests).toHaveLength(0)
     })
 

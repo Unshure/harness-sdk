@@ -24,7 +24,7 @@ export abstract class DecisionModel {
    * @returns A {@link DecisionResult} whose answers are statically narrowed from
    *   each question's `choices`.
    * @throws Error if `questions` is empty or contains an invalid `question`,
-   *   `choices`, or `uncertainOptions`.
+   *   `choices`, or `uncertainty`.
    */
   async ask<const Q extends Record<string, Question>>(state: DecisionInput, questions: Q): Promise<DecisionResult<Q>> {
     validateQuestions(questions)
@@ -81,10 +81,6 @@ function validateQuestions(questions: Record<string, Question>): void {
     if (typeof question.question !== 'string' || question.question.trim().length === 0) {
       throw new Error(`question id=<${id}> | question must be a non-empty string`)
     }
-    const allow = question.uncertainOptions?.allow
-    if (allow !== undefined && typeof allow !== 'boolean') {
-      throw new Error(`question id=<${id}> | uncertainOptions.allow must be a boolean`)
-    }
     const { choices } = question
     if (choices !== 'boolean') {
       if (!Array.isArray(choices) || choices.length === 0) {
@@ -100,9 +96,26 @@ function validateQuestions(questions: Record<string, Question>): void {
         throw new Error(`question id=<${id}> | choice 'uncertain' is reserved for the Uncertain answer`)
       }
     }
-    const minConfidence = question.uncertainOptions?.minConfidence
-    if (minConfidence !== undefined && (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1)) {
-      throw new Error(`question id=<${id}> | uncertainOptions.minConfidence must be in [0.0, 1.0]`)
+    const uncertainty = question.uncertainty
+    if (uncertainty !== undefined && typeof uncertainty !== 'boolean') {
+      if (uncertainty === null || typeof uncertainty !== 'object') {
+        throw new Error(`question id=<${id}> | uncertainty must be a boolean or { minConfidence? } object`)
+      }
+      const minConfidence = uncertainty.minConfidence
+      if (minConfidence !== undefined && (!Number.isFinite(minConfidence) || minConfidence < 0 || minConfidence > 1)) {
+        throw new Error(`question id=<${id}> | uncertainty.minConfidence must be in [0.0, 1.0]`)
+      }
     }
   }
+}
+
+/**
+ * Resolve whether `Uncertain` is permitted for a question, given its `uncertainty`
+ * configuration. Shared by every decision-model implementation.
+ *
+ * @internal
+ */
+export function uncertaintyAllowed(question: Question): boolean {
+  const uncertainty = question.uncertainty
+  return uncertainty !== false
 }

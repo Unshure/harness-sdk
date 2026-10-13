@@ -12,7 +12,7 @@ import { BedrockModel } from '../models/bedrock.js'
 import { Model } from '../models/model.js'
 import { STRUCTURED_OUTPUT_TOOL_NAME, StructuredOutputTool } from '../tools/structured-output-tool.js'
 import { Message, TextBlock, type ContentBlock, type ToolUseBlock } from '../types/messages.js'
-import { DecisionModel } from './decision-model.js'
+import { DecisionModel, uncertaintyAllowed } from './decision-model.js'
 import { Uncertain, type AnswerOf, type DecisionInput, type DecisionResult, type Question } from './types.js'
 
 /** Reserved option value used to signal uncertainty on the wire. */
@@ -56,12 +56,12 @@ export interface LLMDecisionModelOptions {
  *   isFruit: {
  *     question: 'Is the thing talked about a fruit?',
  *     choices: 'boolean',
- *     uncertainOptions: { allow: false },
+ *     uncertainty: false,
  *   },
  * })
  * // result.answers.color   is 'red' | 'green' | 'blue' | Uncertain
  * // result.answers.isFruit is boolean | Uncertain
- * //   (opting out via uncertainOptions.allow only removes 'uncertain' from the
+ * //   (opting out via `uncertainty: false` only removes 'uncertain' from the
  * //    model's enum; the static type still includes Uncertain for safety)
  * ```
  */
@@ -146,8 +146,7 @@ function buildAnswerSchema<const Q extends Record<string, Question>>(
 ): z.ZodObject<Record<string, z.ZodObject<{ answer: z.ZodEnum; reason: z.ZodOptional<z.ZodString> }>>> {
   const shape: Record<string, z.ZodObject<{ answer: z.ZodEnum; reason: z.ZodOptional<z.ZodString> }>> = {}
   for (const [id, question] of Object.entries(questions)) {
-    const allowUncertain = question.uncertainOptions?.allow ?? true
-    const literals = answerLiterals(question, allowUncertain)
+    const literals = answerLiterals(question, uncertaintyAllowed(question))
     shape[id] = z
       .object({
         answer: z.enum(literals as [string, ...string[]]),

@@ -11,7 +11,7 @@ async function main() {
     isHeavy: {
       question: 'Is the thing talked about heavy?',
       choices: 'boolean',
-      uncertainOptions: { allow: false },
+      uncertainty: false,
     },
   })
 

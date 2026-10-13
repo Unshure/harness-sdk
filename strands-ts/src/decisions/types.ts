@@ -33,7 +33,7 @@ export function defineQuestions<const Q extends Record<string, Question>>(questi
  * `choices` constrains the shape of the answer: `'boolean'` yields a boolean, and
  * a readonly tuple of strings yields that tuple's union. In both cases
  * {@link Uncertain} is also a possible answer unless opted out via
- * `uncertainOptions.allow = false`.
+ * `uncertainty: false`.
  *
  * @typeParam C - Static shape of the `choices` field. `ask` is declared with a
  *   `const` type parameter, so inline question maps keep their tuple literals
@@ -44,17 +44,15 @@ export interface Question<C extends 'boolean' | readonly string[] = 'boolean' | 
   question: string
   /** Answer shape: `'boolean'` or a non-empty readonly tuple of string literals. */
   choices: C
-  /** Uncertainty configuration for this question. */
-  uncertainOptions?: {
-    /** Whether `Uncertain` is a permitted response. Defaults to `true`. */
-    allow?: boolean
-    /**
-     * Minimum confidence required to commit to an answer, in `[0.0, 1.0]`.
-     * Read only by implementations that return per-answer confidence (e.g.
-     * System One models); ignored by {@link LLMDecisionModel}.
-     */
-    minConfidence?: number
-  }
+  /**
+   * Uncertainty configuration for this question.
+   * - omitted or `true`: `Uncertain` is a permitted response (default).
+   * - `false`: `Uncertain` is disabled; the model must commit to one of `choices`.
+   * - `{ minConfidence }`: `Uncertain` is permitted, with a custom minimum
+   *   confidence in `[0.0, 1.0]`. Read only by implementations that return
+   *   per-answer confidence (e.g. System One models); ignored by {@link LLMDecisionModel}.
+   */
+  uncertainty?: boolean | { minConfidence?: number }
 }
 
 /**

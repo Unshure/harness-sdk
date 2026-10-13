@@ -36,7 +36,7 @@ describe.each(providers)('DecisionModel Integration Tests ($name)', (provider) =
           isFruit: {
             question: 'Is the thing described a fruit?',
             choices: 'boolean',
-            uncertainOptions: { allow: false },
+            uncertainty: false,
           },
         })
 
