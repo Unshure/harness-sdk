@@ -20,7 +20,7 @@ agent("Create a file at /tmp/notes.txt with the contents '# My Notes'")
 
 `make_file_editor` accepts:
 
-- `root` (`str`, optional): confines every operation to an absolute directory. Applies a string-level check and, when the target exists on the local filesystem, a `realpath`-based symlink check. `root` must resolve on the local host — a container-side path in a Docker/SSH sandbox fails closed because the local process cannot canonicalize container-side symlinks. Route through the sandbox without `root` and rely on the sandbox's own path policy, or construct the editor inside the sandbox.
+- `root` (`str`, optional): confines every operation to an absolute directory. Confinement is *lexical*: paths are normalized (so `..` segments collapse before the containment check) and must sit inside `root`. The editor does not follow symlinks itself — whether a symlink inside `root` can escape it is governed by the sandbox. On first use, the editor verifies `root` exists in the sandbox via `Sandbox.list_files`; if it does not, the call fails.
 - `max_file_size` (`int`, optional): byte cap on files that can be read or written, and on the projected byte size of any edit's output. Defaults to 1 MB.
 - `max_undo_entries` (`int`, optional): maximum distinct paths retained in the per-agent in-memory undo history. Defaults to 32.
 - `max_undo_bytes` (`int`, optional): approximate byte cap on the per-agent undo history. Defaults to 32 MB.
