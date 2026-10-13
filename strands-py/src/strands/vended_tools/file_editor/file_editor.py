@@ -9,9 +9,12 @@ sandbox read from ``tool_context.agent.sandbox`` at call time.
 
 from __future__ import annotations
 
+import asyncio
 import posixpath
-from typing import TYPE_CHECKING, Literal
-from weakref import WeakSet
+from typing import TYPE_CHECKING, Any, Literal
+from weakref import WeakKeyDictionary, WeakSet
+
+from typing_extensions import TypedDict
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
@@ -69,6 +72,17 @@ _Command = Literal[
 ]
 
 _MUTATING_COMMANDS: frozenset[str] = frozenset({"create", "str_replace", "insert", "undo_edit"})
+
+
+class _UndoEntry(TypedDict):
+    """A pre-edit snapshot plus its cached UTF-8 byte length.
+
+    The byte count is stored alongside the content so eviction can enforce
+    ``max_undo_bytes`` without re-encoding every entry on each write.
+    """
+
+    content: str
+    bytes: int
 
 
 def make_file_editor(
@@ -137,6 +151,20 @@ def make_file_editor(
     # goes out of scope does not pin the cache entry.
     verified_sandboxes: WeakSet[Sandbox] = WeakSet()
 
+    # Per-agent lock serializing the undo-history read-modify-write. Two
+    # concurrent mutating tool calls on the same agent would otherwise each
+    # snapshot the pre-call history, run their sandbox write, and overwrite
+    # each other in the finally; the lock keeps the whole mutate step atomic.
+    # WeakKeyDictionary so an agent going out of scope does not pin a lock.
+    undo_locks: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
+
+    def _undo_lock_for(agent: Any) -> asyncio.Lock:
+        lock = undo_locks.get(agent)
+        if lock is None:
+            lock = asyncio.Lock()
+            undo_locks[agent] = lock
+        return lock
+
     async def _verify_root(active: Sandbox) -> None:
         if normalized_root is None or active in verified_sandboxes:
             return
@@ -185,13 +213,7 @@ def make_file_editor(
         await _verify_root(active)
         resolved = _resolve_path(path, normalized_root)
 
-        # Only mutating commands touch undo history, so read-only paths skip
-        # the state load/save (which deep-copies and JSON-validates).
-        mutates_undo = command in _MUTATING_COMMANDS
-        state = tool_context.agent.state if mutates_undo else None
-        undo_history: dict[str, str] = state.get(undo_state_key) or {} if state is not None else {}
-
-        try:
+        async def _dispatch(undo_history: dict[str, _UndoEntry]) -> str | ToolResult:
             if command == "view":
                 return await _handle_view(
                     active, resolved, view_range, max_file_size, tool_context.tool_use["toolUseId"]
@@ -226,11 +248,23 @@ def make_file_editor(
             if command == "undo_edit":
                 return await _handle_undo(active, resolved, undo_history)
             raise ValueError(f"Unknown command: {command}")
-        finally:
-            if state is not None:
-                # Handlers only mutate after a successful sandbox write, so
-                # persisting on the exception path is safe.
-                state.set(undo_state_key, undo_history)
+
+        # Only mutating commands touch undo history, so read-only paths skip
+        # the state load/save (which deep-copies and JSON-validates) and run
+        # concurrently without serializing on the per-agent lock.
+        if command not in _MUTATING_COMMANDS:
+            return await _dispatch({})
+
+        async with _undo_lock_for(tool_context.agent):
+            state = tool_context.agent.state
+            undo_history = state.get(undo_state_key) or {}
+            # Handlers only touch undo_history after a successful sandbox write
+            # and never raise after mutating, so an exception leaves the dict
+            # unchanged and the pre-call state is still accurate — no need to
+            # re-deepcopy up to max_undo_bytes of history to persist a no-op.
+            result = await _dispatch(undo_history)
+            state.set(undo_state_key, undo_history)
+            return result
 
     return file_editor_tool
 
@@ -242,11 +276,13 @@ file_editor = make_file_editor()
 # ---- Path resolution and confinement ----
 
 
-def _resolve_path(file_path: str, root: str | None) -> str:
+def _resolve_path(file_path: str, normalized_root: str | None) -> str:
     """Normalize a path and enforce lexical confinement.
 
-    Rejects non-absolute paths. When ``root`` is set the normalized path must
-    sit inside it. Symlink semantics are the sandbox's responsibility.
+    Rejects non-absolute paths. When ``normalized_root`` is set the normalized
+    path must sit inside it; the caller is responsible for passing a value
+    already produced by ``posixpath.normpath(...).rstrip('/') or '/'``.
+    Symlink semantics are the sandbox's responsibility.
 
     Raises:
         ValueError: On non-absolute paths or out-of-root resolution.
@@ -261,10 +297,10 @@ def _resolve_path(file_path: str, root: str | None) -> str:
 
     normalized = posixpath.normpath(stripped)
 
-    if root is not None:
-        root_norm = posixpath.normpath(root).rstrip("/") or "/"
-        if normalized != root_norm and not normalized.startswith(root_norm.rstrip("/") + "/"):
-            raise ValueError(f"Invalid path: {file_path} is outside the configured root {root}")
+    # When root is "/", every absolute path is already contained.
+    if normalized_root is not None and normalized_root != "/":
+        if normalized != normalized_root and not normalized.startswith(normalized_root + "/"):
+            raise ValueError(f"Invalid path: {file_path} is outside the configured root {normalized_root}")
 
     return normalized
 
@@ -456,11 +492,8 @@ def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) ->
     lines = content.split("\n")
     hits: list[int] = []
     if fuzzy:
-        # Whitespace-tolerant, case-insensitive: match tokens in order using a
-        # linear ordered-subsequence scan. A previous implementation joined
-        # tokens with a regex `.*` chain, which is O(line_length**tokens)
-        # against long single-line content and cannot be interrupted by an
-        # asyncio timeout because the regex engine holds the interpreter.
+        # Linear ordered-subsequence scan over the whitespace-split tokens:
+        # O(line_length) per line and interruptible by an asyncio timeout.
         tokens = [t.lower() for t in search_text.strip().split()]
         if not tokens:
             return hits
@@ -491,7 +524,7 @@ def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) ->
 
 
 def _store_undo_snapshot(
-    undo_history: dict[str, str],
+    undo_history: dict[str, _UndoEntry],
     file_path: str,
     content: str,
     max_entries: int,
@@ -503,17 +536,19 @@ def _store_undo_snapshot(
     the end, and eviction removes the oldest key when either the entry count or
     the aggregate byte cap is exceeded.
 
+    Each entry caches its own UTF-8 byte length so this call encodes only the
+    new ``content`` and reads cached counts for every other entry.
+
     Callers must invoke this only *after* the corresponding write has succeeded
     so a failed write does not overwrite a still-valid earlier snapshot.
     """
-    if file_path in undo_history:
-        del undo_history[file_path]
-    undo_history[file_path] = content
-    total_bytes = sum(len(v.encode("utf-8")) for v in undo_history.values())
+    new_bytes = len(content.encode("utf-8"))
+    undo_history.pop(file_path, None)
+    undo_history[file_path] = {"content": content, "bytes": new_bytes}
+    total_bytes = sum(entry["bytes"] for entry in undo_history.values())
     while undo_history and (len(undo_history) > max_entries or total_bytes > max_bytes):
         oldest_key = next(iter(undo_history))
-        evicted = undo_history.pop(oldest_key)
-        total_bytes -= len(evicted.encode("utf-8"))
+        total_bytes -= undo_history.pop(oldest_key)["bytes"]
 
 
 # ---- Sandbox-routed I/O helpers ----
@@ -652,7 +687,7 @@ async def _handle_create(
     sandbox: Sandbox,
     file_path: str,
     file_text: str | None,
-    undo_history: dict[str, str],
+    undo_history: dict[str, _UndoEntry],
     max_size: int,
 ) -> str:
     """Handle the ``create`` command: write a new file, refusing to overwrite."""
@@ -679,7 +714,7 @@ async def _handle_str_replace(
     new_str: str | None,
     replace_all: bool,
     max_size: int,
-    undo_history: dict[str, str],
+    undo_history: dict[str, _UndoEntry],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -721,7 +756,7 @@ async def _handle_insert(
     insert_line: int | None,
     new_str: str | None,
     max_size: int,
-    undo_history: dict[str, str],
+    undo_history: dict[str, _UndoEntry],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -766,6 +801,11 @@ async def _handle_find_line(
     """
     if search_text is None:
         raise ValueError("Parameter `search_text` is required for command: find_line")
+    if search_text == "":
+        # Non-fuzzy's `in` operator and fuzzy's token split disagree on the
+        # empty string: `"" in line` matches every line, while splitting
+        # yields no tokens and matches nothing. Reject up front.
+        raise ValueError("Parameter `search_text` must not be empty for command: find_line")
 
     exists, is_dir = await _probe_sandbox_path(sandbox, file_path)
     if not exists:
@@ -794,7 +834,7 @@ async def _handle_find_line(
     )
 
 
-async def _handle_undo(sandbox: Sandbox, file_path: str, undo_history: dict[str, str]) -> str:
+async def _handle_undo(sandbox: Sandbox, file_path: str, undo_history: dict[str, _UndoEntry]) -> str:
     """Handle the ``undo_edit`` command: restore the last in-memory snapshot for ``file_path``.
 
     The snapshot is unconditionally written back through the sandbox: if the
@@ -808,7 +848,7 @@ async def _handle_undo(sandbox: Sandbox, file_path: str, undo_history: dict[str,
     if file_path not in undo_history:
         raise ValueError(f"No undo history available for {file_path} in this session.")
 
-    previous_content = undo_history[file_path]
+    previous_content = undo_history[file_path]["content"]
     await sandbox.write_text(file_path, previous_content)
     del undo_history[file_path]
     return f"Reverted {file_path} to its previous in-memory snapshot."

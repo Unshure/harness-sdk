@@ -985,6 +985,46 @@ class TestUndo:
         await editor(command="undo_edit", path=file_path, tool_context=ctx)
         assert (tmp_path / "test.txt").read_text() == "original\n"
 
+    @pytest.mark.asyncio
+    async def test_concurrent_mutations_do_not_lose_snapshots(self, tmp_path):
+        # Guards against the per-agent undo-history race: two concurrent
+        # mutating calls read a stale snapshot, write their result, and the
+        # last finally overwrites the first entry. Each call must observe
+        # the other's snapshot and both files must stay undoable.
+        file_a = _write(tmp_path / "a.txt", "A-original\n")
+        file_b = _write(tmp_path / "b.txt", "B-original\n")
+        sandbox = NotASandboxLocalEnvironment()
+        editor = make_file_editor(sandbox=sandbox)
+
+        agent = _FakeAgent(sandbox=sandbox)
+        ctx_a = ToolContext(
+            tool_use={"name": "file_editor", "toolUseId": "a", "input": {}}, agent=agent, invocation_state={}
+        )
+        ctx_b = ToolContext(
+            tool_use={"name": "file_editor", "toolUseId": "b", "input": {}}, agent=agent, invocation_state={}
+        )
+
+        original_write = sandbox.write_text
+
+        async def interleaving_write(path, content, **kwargs):
+            # Force the two gathered tasks to yield in the middle of their
+            # handlers so the second enters its own state.get() before the
+            # first reaches its finally. Reliably reproduces the race.
+            await asyncio.sleep(0)
+            return await original_write(path, content, **kwargs)
+
+        sandbox.write_text = interleaving_write  # type: ignore[method-assign]
+        await asyncio.gather(
+            editor(command="str_replace", path=file_a, tool_context=ctx_a, old_str="A-original", new_str="A-changed"),
+            editor(command="str_replace", path=file_b, tool_context=ctx_b, old_str="B-original", new_str="B-changed"),
+        )
+        sandbox.write_text = original_write  # type: ignore[method-assign]
+
+        await editor(command="undo_edit", path=file_a, tool_context=ctx_a)
+        await editor(command="undo_edit", path=file_b, tool_context=ctx_b)
+        assert (tmp_path / "a.txt").read_text() == "A-original\n"
+        assert (tmp_path / "b.txt").read_text() == "B-original\n"
+
 
 class TestEmptyInputRejection:
     """Empty ``old_str`` input produces confusing behavior and is rejected."""
@@ -997,6 +1037,17 @@ class TestEmptyInputRejection:
         file_path = _write(tmp_path / "test.txt", "hello\n")
         with pytest.raises(ValueError, match="empty"):
             await editor(command="str_replace", path=file_path, tool_context=ctx, old_str="", new_str="X")
+
+    @pytest.mark.asyncio
+    async def test_find_line_empty_search_text_raises(self, editor, ctx, tmp_path):
+        # Non-fuzzy's `in` matches every line against an empty string while
+        # fuzzy's token split matches nothing; the modes disagree, so the
+        # tool rejects empty input up front.
+        file_path = _write(tmp_path / "test.txt", "one\ntwo\nthree\n")
+        with pytest.raises(ValueError, match="empty"):
+            await editor(command="find_line", path=file_path, tool_context=ctx, search_text="")
+        with pytest.raises(ValueError, match="empty"):
+            await editor(command="find_line", path=file_path, tool_context=ctx, search_text="", fuzzy=True)
 
 
 class TestOversizePreflight:
