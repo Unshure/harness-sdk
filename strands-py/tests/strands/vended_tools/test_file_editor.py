@@ -151,11 +151,11 @@ class TestViewErrors:
             await editor(command="view", path="relative/path.txt", tool_context=ctx)
 
     @pytest.mark.asyncio
-    async def test_traversal_normalizes_and_uses_target(self, editor, ctx):
-        # No root configured: `..` normalizes lexically and the sandbox governs
-        # what exists. The resolver does not manufacture a traversal error.
-        with pytest.raises(ValueError, match="does not exist"):
-            await editor(command="view", path="/tmp/../nonexistent-xyzzy", tool_context=ctx)
+    async def test_traversal_rejected_without_root(self, editor, ctx):
+        # `..` is rejected on the raw input so a default (no-root) deployment
+        # on a host-filesystem sandbox cannot be coerced out of a parent dir.
+        with pytest.raises(ValueError, match="path traversal is not allowed"):
+            await editor(command="view", path="/tmp/../etc/passwd", tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_range_invalid_start_raises(self, editor, ctx, tmp_path):
@@ -521,19 +521,19 @@ class TestConfinementRoot:
         root = tmp_path / "workspace"
         root.mkdir()
         confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
-        with pytest.raises(ValueError, match="outside the configured root"):
+        with pytest.raises(ValueError, match="path traversal is not allowed"):
             await confined(command="view", path=f"{root}/../outside.txt", tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_rejects_backslash_traversal(self, ctx, tmp_path):
         # Guards #3235: backslashes must be treated as separators before the
-        # containment check so a ``..\\..\\etc\\hosts`` segment collapses
-        # instead of surviving as an opaque filename that the sandbox would
-        # later split on ``\\`` and read outside root.
+        # ``..`` check so a ``..\\..\\etc\\hosts`` segment is rejected instead
+        # of surviving as an opaque filename that the sandbox would later
+        # split on ``\\`` and read outside root.
         root = tmp_path / "workspace"
         root.mkdir()
         confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
-        with pytest.raises(ValueError, match="outside the configured root"):
+        with pytest.raises(ValueError, match="path traversal is not allowed"):
             await confined(command="view", path=f"{root}/..\\..\\etc\\hosts", tool_context=ctx)
 
     @pytest.mark.asyncio

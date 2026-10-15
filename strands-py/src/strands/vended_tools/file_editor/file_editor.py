@@ -268,17 +268,18 @@ file_editor = make_file_editor()
 def _resolve_path(file_path: str, root: str | None) -> str:
     r"""Normalize a path and enforce lexical confinement.
 
-    Rejects non-absolute paths. When ``root`` is set the normalized path must
+    Rejects non-absolute paths and any ``..`` segment outright, matching the
+    sandbox path model. When ``root`` is set the normalized path must also
     sit inside it. Symlink semantics are the sandbox's responsibility.
 
-    Backslashes are treated as path separators before normalization so a
-    ``..\..\etc\hosts`` segment collapses through ``posixpath.normpath`` the
-    same way its ``/`` form does — otherwise the containment check sees a
-    single opaque filename, admits the path, and the sandbox later splits on
-    ``\`` and reads outside ``root``.
+    Backslashes are treated as path separators before validation so a
+    ``..\..\etc\hosts`` segment is rejected the same way its ``/`` form is —
+    otherwise the raw-segment check would see a single opaque filename, admit
+    the path, and the sandbox later splits on ``\`` and reads outside ``root``.
 
     Raises:
-        ValueError: On non-absolute paths or out-of-root resolution.
+        ValueError: On non-absolute paths, ``..`` segments, or out-of-root
+            resolution.
     """
     normalized_separators = file_path.replace("\\", "/")
     stripped = normalized_separators.rstrip("/") or normalized_separators
@@ -289,11 +290,15 @@ def _resolve_path(file_path: str, root: str | None) -> str:
             f"The path {file_path} is not an absolute path, it should start with `/`. Maybe you meant {suggested}?"
         )
 
+    if ".." in stripped.split("/"):
+        raise ValueError("Invalid path: path traversal is not allowed")
+
     normalized = posixpath.normpath(stripped)
 
     if root is not None:
         root_norm = posixpath.normpath(root).rstrip("/") or "/"
-        if normalized != root_norm and not normalized.startswith(root_norm.rstrip("/") + "/"):
+        prefix = root_norm if root_norm == "/" else root_norm + "/"
+        if normalized != root_norm and not normalized.startswith(prefix):
             raise ValueError(f"Invalid path: {file_path} is outside the configured root {root}")
 
     return normalized
@@ -560,8 +565,8 @@ async def _read_text_or_reject_binary(sandbox: Sandbox, file_path: str, max_size
         raise ValueError(f"Refusing to read binary file: {file_path}")
     try:
         return raw.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise ValueError(f"Refusing to read non-UTF-8 file: {file_path}") from e
+    except UnicodeDecodeError as error:
+        raise ValueError(f"Refusing to read non-UTF-8 file: {file_path}") from error
 
 
 async def _list_directory(sandbox: Sandbox, dir_path: str) -> str:
