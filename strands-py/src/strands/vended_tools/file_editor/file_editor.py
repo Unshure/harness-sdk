@@ -9,8 +9,11 @@ sandbox read from ``tool_context.agent.sandbox`` at call time.
 
 from __future__ import annotations
 
+import asyncio
 import posixpath
-from typing import TYPE_CHECKING, Literal
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
+from weakref import WeakKeyDictionary
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
@@ -48,6 +51,50 @@ _Command = Literal[
 _MUTATING_COMMANDS: frozenset[str] = frozenset({"create", "str_replace", "insert", "undo_edit"})
 
 
+@dataclass
+class _UndoEntry:
+    """Single undo snapshot: file content plus its cached UTF-8 byte length.
+
+    Pairing content with its byte length in one struct keeps size bookkeeping
+    O(1) and prevents the two values from drifting out of sync across edits.
+    """
+
+    content: str
+    size: int
+
+    def to_state(self) -> dict[str, Any]:
+        """Serialize for ``agent.state`` (JSON-compatible)."""
+        return {"content": self.content, "size": self.size}
+
+    @classmethod
+    def from_state(cls, raw: Any) -> _UndoEntry:
+        """Rebuild from a serialized ``agent.state`` entry, re-encoding size when absent."""
+        if isinstance(raw, dict) and "content" in raw:
+            content = raw["content"]
+            size = raw.get("size")
+            if not isinstance(size, int):
+                size = len(content.encode("utf-8"))
+            return cls(content=content, size=size)
+        content = raw if isinstance(raw, str) else ""
+        return cls(content=content, size=len(content.encode("utf-8")))
+
+
+async def _verify_root(sandbox: Sandbox, normalized_root: str | None) -> None:
+    """Verify ``normalized_root`` exists in the sandbox, raising a clear configuration error if not.
+
+    Probed on every call rather than memoized: a root that is deleted after an
+    earlier successful probe must still trip the clear configuration error, not
+    surface as a generic "path does not exist" on whatever child the model
+    tries next.
+    """
+    if normalized_root is None:
+        return
+    try:
+        await sandbox.list_files(normalized_root)
+    except SandboxPathNotFoundError as error:
+        raise ValueError(f"Invalid configuration: root {normalized_root} does not exist in the sandbox.") from error
+
+
 def make_file_editor(
     *,
     sandbox: Sandbox | None = None,
@@ -77,14 +124,11 @@ def make_file_editor(
         name: Tool name. Defaults to ``"file_editor"``.
         description: Tool description shown to the model.
         root: Optional absolute directory that confines every operation. Paths
-            are normalized (so ``..`` segments collapse before the containment
-            check) and must sit inside ``root``. Confinement is *lexical*: the
-            editor does not follow symlinks itself. Filesystem semantics —
-            including whether a symlink inside ``root`` can escape it — are
-            governed by the sandbox. On first use, the editor verifies ``root``
-            exists in the sandbox via :meth:`Sandbox.list_files`; if it does
-            not, the call fails. When ``root`` is ``None`` only the
-            absolute-path check applies.
+            are normalized and must sit inside ``root``. Confinement is
+            *lexical*: the editor does not follow symlinks itself. Filesystem
+            semantics are governed by the sandbox. On first use the editor
+            verifies ``root`` exists in the sandbox. When ``root`` is ``None``
+            only the absolute-path check applies.
         max_file_size: Maximum file size (bytes) accepted by view/edit
             commands. Defaults to 1 MB.
         max_undo_entries: Maximum number of distinct paths retained in the
@@ -107,22 +151,15 @@ def make_file_editor(
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
 
-    sizes_state_key = f"{undo_state_key}.sizes"
-
     if normalized_root is not None and description is DEFAULT_FILE_EDITOR_DESCRIPTION:
         description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
 
-    async def _verify_root(active: Sandbox) -> None:
-        # Probed on every call rather than memoized: a root that is deleted
-        # after an earlier successful probe must still trip the clear
-        # configuration error, not surface as a generic "path does not exist"
-        # on whatever child the model tries next.
-        if normalized_root is None:
-            return
-        try:
-            await active.list_files(normalized_root)
-        except SandboxPathNotFoundError as error:
-            raise ValueError(f"Invalid configuration: root {normalized_root} does not exist in the sandbox.") from error
+    # Per-agent lock keyed by the agent object (weak ref so locks are released
+    # with their agent). Serializes the read-modify-write of the undo state
+    # across concurrent file_editor calls within one agent's turn — a plain
+    # ``state.get`` → mutate → ``state.set`` sequence straddles awaits and can
+    # otherwise drop snapshots.
+    undo_locks: WeakKeyDictionary[Any, asyncio.Lock] = WeakKeyDictionary()
 
     @tool(name=name, description=description, context="tool_context")
     async def file_editor_tool(
@@ -160,60 +197,63 @@ def make_file_editor(
                 broad edits.
         """
         active = sandbox if sandbox is not None else tool_context.agent.sandbox
-        await _verify_root(active)
+        await _verify_root(active, normalized_root)
         resolved = _resolve_path(path, normalized_root)
 
-        # Only mutating commands touch undo history, so read-only paths skip
-        # the state load/save (which deep-copies and JSON-validates).
-        mutates_undo = command in _MUTATING_COMMANDS
-        state = tool_context.agent.state if mutates_undo else None
-        undo_history: dict[str, str] = state.get(undo_state_key) or {} if state is not None else {}
-        # Sidecar byte-size cache aligned to ``undo_history`` keys so eviction
-        # bookkeeping stays O(1) amortized across edits (no re-encoding every
-        # stored snapshot on each call).
-        undo_sizes: dict[str, int] = state.get(sizes_state_key) or {} if state is not None else {}
-
-        try:
+        if command not in _MUTATING_COMMANDS:
+            # Read-only commands do not touch undo state, so they bypass the
+            # per-agent lock and the state load/save.
             if command == "view":
                 return await _handle_view(active, resolved, view_range, max_file_size)
-            if command == "create":
-                return await _handle_create(active, resolved, file_text, undo_history, undo_sizes, max_file_size)
-            if command == "str_replace":
-                return await _handle_str_replace(
-                    active,
-                    resolved,
-                    old_str,
-                    new_str,
-                    replace_all,
-                    max_file_size,
-                    undo_history,
-                    undo_sizes,
-                    max_undo_entries,
-                    max_undo_bytes,
-                )
-            if command == "insert":
-                return await _handle_insert(
-                    active,
-                    resolved,
-                    insert_line,
-                    new_str,
-                    max_file_size,
-                    undo_history,
-                    undo_sizes,
-                    max_undo_entries,
-                    max_undo_bytes,
-                )
             if command == "find_line":
                 return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
-            if command == "undo_edit":
-                return await _handle_undo(active, resolved, undo_history, undo_sizes)
             raise ValueError(f"Unknown command: {command}")
-        finally:
-            if state is not None:
+
+        agent = tool_context.agent
+        lock = undo_locks.get(agent)
+        if lock is None:
+            lock = undo_locks.setdefault(agent, asyncio.Lock())
+
+        async with lock:
+            state = agent.state
+            raw_history = state.get(undo_state_key) or {}
+            undo_history: dict[str, _UndoEntry] = {
+                file_path: _UndoEntry.from_state(entry) for file_path, entry in raw_history.items()
+            }
+
+            try:
+                if command == "create":
+                    return await _handle_create(active, resolved, file_text, undo_history, max_file_size)
+                if command == "str_replace":
+                    return await _handle_str_replace(
+                        active,
+                        resolved,
+                        old_str,
+                        new_str,
+                        replace_all,
+                        max_file_size,
+                        undo_history,
+                        max_undo_entries,
+                        max_undo_bytes,
+                    )
+                if command == "insert":
+                    return await _handle_insert(
+                        active,
+                        resolved,
+                        insert_line,
+                        new_str,
+                        max_file_size,
+                        undo_history,
+                        max_undo_entries,
+                        max_undo_bytes,
+                    )
+                if command == "undo_edit":
+                    return await _handle_undo(active, resolved, undo_history)
+                raise ValueError(f"Unknown command: {command}")
+            finally:
                 # Handlers only mutate after a successful sandbox write, so
                 # persisting on the exception path is safe.
-                state.set(undo_state_key, undo_history)
-                state.set(sizes_state_key, undo_sizes)
+                state.set(undo_state_key, {file_path: entry.to_state() for file_path, entry in undo_history.items()})
 
     return file_editor_tool
 
@@ -226,15 +266,22 @@ file_editor = make_file_editor()
 
 
 def _resolve_path(file_path: str, root: str | None) -> str:
-    """Normalize a path and enforce lexical confinement.
+    r"""Normalize a path and enforce lexical confinement.
 
     Rejects non-absolute paths. When ``root`` is set the normalized path must
     sit inside it. Symlink semantics are the sandbox's responsibility.
 
+    Backslashes are treated as path separators before normalization so a
+    ``..\..\etc\hosts`` segment collapses through ``posixpath.normpath`` the
+    same way its ``/`` form does — otherwise the containment check sees a
+    single opaque filename, admits the path, and the sandbox later splits on
+    ``\`` and reads outside ``root``.
+
     Raises:
         ValueError: On non-absolute paths or out-of-root resolution.
     """
-    stripped = file_path.rstrip("/\\") or file_path
+    normalized_separators = file_path.replace("\\", "/")
+    stripped = normalized_separators.rstrip("/") or normalized_separators
 
     if not posixpath.isabs(stripped):
         suggested = posixpath.abspath(stripped)
@@ -291,52 +338,6 @@ def _apply_view_range(file_content: str, view_range: list[int] | None) -> tuple[
     return content, start
 
 
-def _preflight_str_replace_output_size(
-    original_content: str,
-    old_str: str,
-    new_str_value: str,
-    replace_all: bool,
-    occurrences: int,
-    max_size: int,
-    file_path: str,
-) -> None:
-    """Reject a ``str_replace`` whose projected UTF-8 output would exceed ``max_size``.
-
-    The projected size is exact — ``str.replace`` never re-runs itself — so
-    rejection happens before allocating the substituted string. Guards against
-    a pathological ``replace_all`` (many small matches, large replacement)
-    trying to allocate a multi-terabyte buffer.
-    """
-    old_bytes = len(old_str.encode("utf-8"))
-    new_bytes = len(new_str_value.encode("utf-8"))
-    count = occurrences if replace_all else 1
-    projected = len(original_content.encode("utf-8")) + count * (new_bytes - old_bytes)
-    if projected > max_size:
-        raise ValueError(
-            f"The edit would produce a {projected}-byte file at {file_path}, "
-            f"exceeding the maximum allowed size of {max_size} bytes."
-        )
-
-
-def _preflight_insert_output_size(
-    original_content: str,
-    new_str: str,
-    max_size: int,
-    file_path: str,
-) -> None:
-    """Reject an ``insert`` whose projected UTF-8 output would exceed ``max_size``."""
-    # One extra newline joins the inserted block to the surrounding content.
-    # No separator is added when the file was empty — ``_build_insert_result``
-    # replaces the content outright in that case.
-    separator = 1 if original_content else 0
-    projected = len(original_content.encode("utf-8")) + len(new_str.encode("utf-8")) + separator
-    if projected > max_size:
-        raise ValueError(
-            f"The edit would produce a {projected}-byte file at {file_path}, "
-            f"exceeding the maximum allowed size of {max_size} bytes."
-        )
-
-
 def _build_str_replace_result(
     original_content: str,
     old_str: str,
@@ -365,11 +366,19 @@ def _build_str_replace_result(
             f"{line_numbers}. Pass replace_all=True to replace every occurrence, or make old_str unique."
         )
 
-    _preflight_str_replace_output_size(
-        original_content, old_str, new_str_value, replace_all, occurrences, max_size, file_path
-    )
-
+    # Project the exact output size before allocating the substituted string so
+    # a pathological ``replace_all`` (many small matches, large replacement)
+    # cannot trigger a multi-gigabyte buffer. ``str.replace`` doesn't re-run
+    # itself, so the arithmetic is exact.
     count = occurrences if replace_all else 1
+    projected = len(original_content.encode("utf-8")) + count * (
+        len(new_str_value.encode("utf-8")) - len(old_str.encode("utf-8"))
+    )
+    if projected > max_size:
+        raise ValueError(
+            f"The edit would produce a {projected}-byte file at {file_path}, "
+            f"exceeding the maximum allowed size of {max_size} bytes."
+        )
     new_content = (
         original_content.replace(old_str, new_str_value)
         if replace_all
@@ -449,10 +458,10 @@ def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) ->
         return hits
     if fuzzy:
         # Whitespace-tolerant, case-insensitive: match tokens in order using a
-        # linear ordered-subsequence scan. A previous implementation joined
-        # tokens with a regex `.*` chain, which is O(line_length**tokens)
-        # against long single-line content and cannot be interrupted by an
-        # asyncio timeout because the regex engine holds the interpreter.
+        # linear ordered-subsequence scan. Avoids a regex `.*`-chain approach
+        # whose worst case is O(line_length**tokens) against long single-line
+        # content and cannot be interrupted by an asyncio timeout — the regex
+        # engine holds the interpreter.
         tokens = [t.lower() for t in search_text.strip().split()]
         if not tokens:
             return hits
@@ -483,8 +492,7 @@ def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) ->
 
 
 def _store_undo_snapshot(
-    undo_history: dict[str, str],
-    undo_sizes: dict[str, int],
+    undo_history: dict[str, _UndoEntry],
     file_path: str,
     content: str,
     max_entries: int,
@@ -494,19 +502,15 @@ def _store_undo_snapshot(
 
     ``dict`` insertion order gives LRU semantics: a re-inserted key is moved to
     the end, and eviction removes the oldest key when either the entry count or
-    the aggregate byte cap is exceeded. ``undo_sizes`` is a parallel dict that
-    caches each entry's UTF-8 byte length so bookkeeping does not re-encode
-    every stored snapshot on each edit.
+    the aggregate byte cap is exceeded. Each entry caches its UTF-8 byte length
+    so bookkeeping does not re-encode every stored snapshot on each edit.
 
     Callers must invoke this only *after* the corresponding write has succeeded
     so a failed write does not overwrite a still-valid earlier snapshot.
     """
-    if file_path in undo_history:
-        del undo_history[file_path]
-        undo_sizes.pop(file_path, None)
-    undo_history[file_path] = content
-    undo_sizes[file_path] = len(content.encode("utf-8"))
-    total_bytes = sum(undo_sizes.values())
+    undo_history.pop(file_path, None)
+    undo_history[file_path] = _UndoEntry(content=content, size=len(content.encode("utf-8")))
+    total_bytes = sum(entry.size for entry in undo_history.values())
     # Preserve the just-inserted entry: an edit whose snapshot alone exceeds
     # `max_bytes` would otherwise evict every older entry and then itself,
     # leaving the user with no undo for a write we already reported as
@@ -514,8 +518,7 @@ def _store_undo_snapshot(
     # than the whole budget.
     while len(undo_history) > 1 and (len(undo_history) > max_entries or total_bytes > max_bytes):
         oldest_key = next(iter(undo_history))
-        del undo_history[oldest_key]
-        total_bytes -= undo_sizes.pop(oldest_key, 0)
+        total_bytes -= undo_history.pop(oldest_key).size
 
 
 # ---- Sandbox-routed I/O helpers ----
@@ -620,8 +623,7 @@ async def _handle_create(
     sandbox: Sandbox,
     file_path: str,
     file_text: str | None,
-    undo_history: dict[str, str],
-    undo_sizes: dict[str, int],
+    undo_history: dict[str, _UndoEntry],
     max_size: int,
 ) -> str:
     """Handle the ``create`` command: write a new file, refusing to overwrite."""
@@ -638,7 +640,6 @@ async def _handle_create(
     # create means deleting the file, which is a different operation from
     # "restore prior content" and is easy for the caller to do themselves.
     undo_history.pop(file_path, None)
-    undo_sizes.pop(file_path, None)
     return f"File created successfully at: {file_path}"
 
 
@@ -649,8 +650,7 @@ async def _handle_str_replace(
     new_str: str | None,
     replace_all: bool,
     max_size: int,
-    undo_history: dict[str, str],
-    undo_sizes: dict[str, int],
+    undo_history: dict[str, _UndoEntry],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -676,7 +676,7 @@ async def _handle_str_replace(
     # Snapshot only after the write commits so a failed write leaves the
     # previous entry — which still reflects on-disk state — valid to undo.
     await sandbox.write_text(file_path, new_content)
-    _store_undo_snapshot(undo_history, undo_sizes, file_path, file_content, max_undo_entries, max_undo_bytes)
+    _store_undo_snapshot(undo_history, file_path, file_content, max_undo_entries, max_undo_bytes)
 
     suffix = f" ({count} occurrences replaced)" if replace_all and count > 1 else ""
     return (
@@ -692,8 +692,7 @@ async def _handle_insert(
     insert_line: int | None,
     new_str: str | None,
     max_size: int,
-    undo_history: dict[str, str],
-    undo_sizes: dict[str, int],
+    undo_history: dict[str, _UndoEntry],
     max_undo_entries: int,
     max_undo_bytes: int,
 ) -> str:
@@ -710,11 +709,23 @@ async def _handle_insert(
 
     file_text = await _read_text_or_reject_binary(sandbox, file_path, max_size)
 
-    _preflight_insert_output_size(file_text, new_str, max_size, file_path)
+    # Project the UTF-8 output size before building the string so an insert
+    # that would blow past ``max_size`` is rejected without allocating it. One
+    # extra newline joins the inserted block to the surrounding content; no
+    # separator is added when the file was empty — ``_build_insert_result``
+    # replaces the content outright in that case.
+    separator = 1 if file_text else 0
+    projected = len(file_text.encode("utf-8")) + len(new_str.encode("utf-8")) + separator
+    if projected > max_size:
+        raise ValueError(
+            f"The edit would produce a {projected}-byte file at {file_path}, "
+            f"exceeding the maximum allowed size of {max_size} bytes."
+        )
+
     new_content, snippet, start_line = _build_insert_result(file_text, insert_line, new_str)
 
     await sandbox.write_text(file_path, new_content)
-    _store_undo_snapshot(undo_history, undo_sizes, file_path, file_text, max_undo_entries, max_undo_bytes)
+    _store_undo_snapshot(undo_history, file_path, file_text, max_undo_entries, max_undo_bytes)
 
     return (
         f"The file {file_path} has been edited. "
@@ -775,8 +786,7 @@ async def _handle_find_line(
 async def _handle_undo(
     sandbox: Sandbox,
     file_path: str,
-    undo_history: dict[str, str],
-    undo_sizes: dict[str, int],
+    undo_history: dict[str, _UndoEntry],
 ) -> str:
     """Handle the ``undo_edit`` command: restore the last in-memory snapshot for ``file_path``.
 
@@ -791,8 +801,6 @@ async def _handle_undo(
     if file_path not in undo_history:
         raise ValueError(f"No undo history available for {file_path} in this session.")
 
-    previous_content = undo_history[file_path]
-    await sandbox.write_text(file_path, previous_content)
+    await sandbox.write_text(file_path, undo_history[file_path].content)
     del undo_history[file_path]
-    undo_sizes.pop(file_path, None)
     return f"Reverted {file_path} to its previous in-memory snapshot."

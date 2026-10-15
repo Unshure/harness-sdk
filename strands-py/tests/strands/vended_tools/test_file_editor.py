@@ -525,6 +525,18 @@ class TestConfinementRoot:
             await confined(command="view", path=f"{root}/../outside.txt", tool_context=ctx)
 
     @pytest.mark.asyncio
+    async def test_rejects_backslash_traversal(self, ctx, tmp_path):
+        # Guards #3235: backslashes must be treated as separators before the
+        # containment check so a ``..\\..\\etc\\hosts`` segment collapses
+        # instead of surviving as an opaque filename that the sandbox would
+        # later split on ``\\`` and read outside root.
+        root = tmp_path / "workspace"
+        root.mkdir()
+        confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
+        with pytest.raises(ValueError, match="outside the configured root"):
+            await confined(command="view", path=f"{root}/..\\..\\etc\\hosts", tool_context=ctx)
+
+    @pytest.mark.asyncio
     async def test_rejects_sibling_that_shares_prefix(self, ctx, tmp_path):
         root = tmp_path / "ws"
         root.mkdir()
