@@ -814,10 +814,8 @@ class TestFindLine:
 
     @pytest.mark.asyncio
     async def test_fuzzy_search_is_linear_on_pathological_input(self, editor, ctx, tmp_path):
-        # Regression: an earlier implementation joined escaped tokens with a
-        # regex ``.*`` chain, which backtracks catastrophically on a long
-        # single line and cannot be interrupted (see #3394). Assert the linear
-        # scan completes well inside a short wall-clock bound.
+        # Regression (#3394): fuzzy search must stay linear so an asyncio
+        # timeout can interrupt it. Assert completion inside a short bound.
         content = "a" * 500 + "\n"
         file_path = _write(tmp_path / "long.txt", content)
         result = await asyncio.wait_for(
@@ -909,6 +907,33 @@ class TestUndo:
         # Agent B's own edit is still undoable and lands on B's file (not A's).
         await shared(command="undo_edit", path=file_b, tool_context=ctx_b)
         assert (tmp_path / "a.txt").read_text() == "A-changed\n"
+        assert (tmp_path / "b.txt").read_text() == "B-original\n"
+
+    @pytest.mark.asyncio
+    async def test_two_editors_sharing_state_key_dont_drop_snapshots(self, ctx, tmp_path):
+        # Two editor instances for one agent sharing the default undo_state_key
+        # must preserve each other's snapshots when their calls interleave on the
+        # event loop. The state update is a synchronous read-modify-write with
+        # no await between get and set, which guarantees serialization.
+        file_a = _write(tmp_path / "a.txt", "A-original\n")
+        file_b = _write(tmp_path / "b.txt", "B-original\n")
+        sandbox = NotASandboxLocalEnvironment()
+        editor_one = make_file_editor(sandbox=sandbox)
+        editor_two = make_file_editor(sandbox=sandbox)
+
+        await asyncio.gather(
+            editor_one(
+                command="str_replace", path=file_a, tool_context=ctx, old_str="A-original", new_str="A-changed"
+            ),
+            editor_two(
+                command="str_replace", path=file_b, tool_context=ctx, old_str="B-original", new_str="B-changed"
+            ),
+        )
+
+        # Both snapshots survived — either editor can undo the other's edit.
+        await editor_one(command="undo_edit", path=file_b, tool_context=ctx)
+        await editor_two(command="undo_edit", path=file_a, tool_context=ctx)
+        assert (tmp_path / "a.txt").read_text() == "A-original\n"
         assert (tmp_path / "b.txt").read_text() == "B-original\n"
 
     @pytest.mark.asyncio
