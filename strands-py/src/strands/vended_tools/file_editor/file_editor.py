@@ -46,8 +46,6 @@ _Command = Literal[
     "undo_edit",
 ]
 
-_MUTATING_COMMANDS: frozenset[str] = frozenset({"create", "str_replace", "insert", "undo_edit"})
-
 
 @dataclass
 class _UndoEntry:
@@ -134,7 +132,7 @@ def make_file_editor(
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
 
-    if normalized_root is not None and description is DEFAULT_FILE_EDITOR_DESCRIPTION:
+    if normalized_root is not None and description == DEFAULT_FILE_EDITOR_DESCRIPTION:
         description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
 
     @tool(name=name, description=description, context="tool_context")
@@ -189,7 +187,14 @@ def make_file_editor(
 
         if command == "create":
             result = await _handle_create(active, resolved, file_text, max_file_size)
-            _commit_undo_update(state, undo_state_key, resolved, snapshot=None)
+            _commit_undo_update(
+                state,
+                undo_state_key,
+                resolved,
+                snapshot=None,
+                max_entries=max_undo_entries,
+                max_bytes=max_undo_bytes,
+            )
             return result
         if command == "str_replace":
             result, pre_edit_content = await _handle_str_replace(
@@ -223,7 +228,14 @@ def make_file_editor(
                 raise ValueError(f"No undo history available for {resolved} in this session.")
             snapshot = _UndoEntry.from_state(raw_history[resolved])
             await active.write_text(resolved, snapshot.content)
-            _commit_undo_update(state, undo_state_key, resolved, snapshot=None)
+            _commit_undo_update(
+                state,
+                undo_state_key,
+                resolved,
+                snapshot=None,
+                max_entries=max_undo_entries,
+                max_bytes=max_undo_bytes,
+            )
             return f"Reverted {resolved} to its previous in-memory snapshot."
 
         raise ValueError(f"Unknown command: {command}")
@@ -347,8 +359,11 @@ def _build_str_replace_result(
     if occurrences == 0:
         raise ValueError(f"No replacement was performed, old_str `{old_str}` did not appear verbatim in {file_path}.")
     if occurrences > 1 and not replace_all:
-        lines = original_content.split("\n")
-        line_numbers = [i + 1 for i, line in enumerate(lines) if old_str in line]
+        line_numbers: list[int] = []
+        search_from = 0
+        while (match_index := original_content.find(old_str, search_from)) != -1:
+            line_numbers.append(original_content.count("\n", 0, match_index) + 1)
+            search_from = match_index + 1
         raise ValueError(
             f"No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines "
             f"{line_numbers}. Pass replace_all=True to replace every occurrence, or make old_str unique."
@@ -432,11 +447,11 @@ def _make_output(file_content: str, file_descriptor: str, init_line: int = 1) ->
 
 
 def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) -> list[int]:
-    """Return every 0-indexed line where ``search_text`` matches, capped at ``cap`` entries.
+    r"""Return every 0-indexed line where ``search_text`` matches, capped at ``cap`` entries.
 
     When ``fuzzy=True``, runs of whitespace in both the search text and each
     line are collapsed to a single space before a case-insensitive substring
-    match — so ``"foo bar"`` matches ``"foo   bar"`` or ``"foo\\tbar"`` but
+    match — so ``"foo bar"`` matches ``"foo   bar"`` or ``"foo\tbar"`` but
     not ``"foo xyz bar"``. Returns an empty list when nothing matches.
     """
     lines = content.split("\n")
