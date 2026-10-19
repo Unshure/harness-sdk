@@ -431,36 +431,23 @@ def _make_output(file_content: str, file_descriptor: str, init_line: int = 1) ->
 def _find_line_numbers(content: str, search_text: str, fuzzy: bool, cap: int) -> list[int]:
     """Return every 0-indexed line where ``search_text`` matches, capped at ``cap`` entries.
 
-    When ``fuzzy=True``, whitespace between tokens is collapsed and matching is
-    case-insensitive. Returns an empty list when nothing matches.
+    When ``fuzzy=True``, runs of whitespace in both the search text and each
+    line are collapsed to a single space before a case-insensitive substring
+    match — so ``"foo bar"`` matches ``"foo   bar"`` or ``"foo\\tbar"`` but
+    not ``"foo xyz bar"``. Returns an empty list when nothing matches.
     """
     lines = content.split("\n")
     hits: list[int] = []
     # Empty search text would make the plain substring branch match every line
-    # (``"" in line`` is always true); the fuzzy branch already short-circuits
-    # on an empty token list, so align both modes.
+    # (``"" in line`` is always true); align the fuzzy branch to the same rule.
     if not search_text:
         return hits
     if fuzzy:
-        # Whitespace-tolerant, case-insensitive: match tokens in order using a
-        # linear ordered-subsequence scan. Avoids a regex `.*`-chain approach
-        # whose worst case is O(line_length**tokens) against long single-line
-        # content and cannot be interrupted by an asyncio timeout — the regex
-        # engine holds the interpreter.
-        tokens = [t.lower() for t in search_text.strip().split()]
-        if not tokens:
+        needle = " ".join(search_text.split()).lower()
+        if not needle:
             return hits
         for index, line in enumerate(lines):
-            lowered = line.lower()
-            position = 0
-            matched = True
-            for token in tokens:
-                found = lowered.find(token, position)
-                if found == -1:
-                    matched = False
-                    break
-                position = found + len(token)
-            if matched:
+            if needle in " ".join(line.split()).lower():
                 hits.append(index)
                 if len(hits) >= cap:
                     break

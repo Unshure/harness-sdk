@@ -785,6 +785,16 @@ class TestFindLine:
         assert "[1]" in result
 
     @pytest.mark.asyncio
+    async def test_fuzzy_does_not_allow_arbitrary_content_between_tokens(self, editor, ctx, tmp_path):
+        # Fuzzy is whitespace-tolerant only: tokens separated by non-whitespace
+        # content (``foo = baz; bar``) must not match ``foo bar``.
+        file_path = _write(tmp_path / "test.txt", "foo = baz; bar\n")
+        result = await editor(
+            command="find_line", path=file_path, tool_context=ctx, search_text="foo bar", fuzzy=True
+        )
+        assert "No matches" in result
+
+    @pytest.mark.asyncio
     async def test_truncates_past_hit_cap(self, editor, ctx, tmp_path):
         # 300 matching lines with a 200-hit cap: the reply is truncated and says so.
         content = "\n".join("hit line" for _ in range(300)) + "\n"
