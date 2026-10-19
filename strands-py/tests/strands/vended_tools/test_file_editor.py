@@ -525,16 +525,17 @@ class TestConfinementRoot:
             await confined(command="view", path=f"{root}/../outside.txt", tool_context=ctx)
 
     @pytest.mark.asyncio
-    async def test_rejects_backslash_traversal(self, ctx, tmp_path):
-        # Guards #3235: backslashes must be treated as separators before the
-        # ``..`` check so a ``..\\..\\etc\\hosts`` segment is rejected instead
-        # of surviving as an opaque filename that the sandbox would later
-        # split on ``\\`` and read outside root.
+    async def test_backslash_in_filename_is_literal(self, ctx, tmp_path):
+        # On POSIX, ``\`` is a legal character in a filename. Containment must
+        # treat it literally — a basename like ``weird\name`` sits inside root
+        # and must not be rewritten into a ``weird/name`` subpath.
         root = tmp_path / "workspace"
         root.mkdir()
+        weird = root / "weird\\name"
+        weird.write_text("ok", encoding="utf-8")
         confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
-        with pytest.raises(ValueError, match="path traversal is not allowed"):
-            await confined(command="view", path=f"{root}/..\\..\\etc\\hosts", tool_context=ctx)
+        result = await confined(command="view", path=str(weird), tool_context=ctx)
+        assert "ok" in result
 
     @pytest.mark.asyncio
     async def test_rejects_sibling_that_shares_prefix(self, ctx, tmp_path):

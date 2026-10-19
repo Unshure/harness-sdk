@@ -252,23 +252,17 @@ async def _verify_root(sandbox: Sandbox, normalized_root: str | None) -> None:
 
 
 def _resolve_path(file_path: str, root: str | None) -> str:
-    r"""Normalize a path and enforce lexical confinement.
+    """Normalize a path and enforce lexical confinement.
 
     Rejects non-absolute paths and any ``..`` segment outright, matching the
     sandbox path model. When ``root`` is set the normalized path must also
     sit inside it. Symlink semantics are the sandbox's responsibility.
 
-    Backslashes are treated as path separators before validation so a
-    ``..\..\etc\hosts`` segment is rejected the same way its ``/`` form is —
-    otherwise the raw-segment check would see a single opaque filename, admit
-    the path, and the sandbox later splits on ``\`` and reads outside ``root``.
-
     Raises:
         ValueError: On non-absolute paths, ``..`` segments, or out-of-root
             resolution.
     """
-    normalized_separators = file_path.replace("\\", "/")
-    stripped = normalized_separators.rstrip("/") or normalized_separators
+    stripped = file_path.rstrip("/") or file_path
 
     if not posixpath.isabs(stripped):
         suggested = posixpath.abspath(stripped)
@@ -535,9 +529,8 @@ async def _probe_sandbox_path(sandbox: Sandbox, file_path: str) -> tuple[bool, b
     A missing parent or entry becomes ``(False, False)``; other listing errors
     (permission, transport) propagate so they are not disguised as non-existence.
     """
-    normalized = file_path.replace("\\", "/")
-    parent = "/".join(normalized.split("/")[:-1]) or "/"
-    name = normalized.split("/")[-1]
+    parent = "/".join(file_path.split("/")[:-1]) or "/"
+    name = file_path.split("/")[-1]
     try:
         entry = next((e for e in await sandbox.list_files(parent) if e.name == name), None)
     except SandboxPathNotFoundError:
