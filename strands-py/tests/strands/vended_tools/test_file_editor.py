@@ -16,7 +16,7 @@ from strands.agent.state import AgentState
 from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from strands.types.tools import ToolContext
 from strands.vended_tools.file_editor import file_editor, make_file_editor
-from strands.vended_tools.file_editor.file_editor import DEFAULT_FILE_EDITOR_DESCRIPTION
+from strands.vended_tools.file_editor.file_editor import DEFAULT_FILE_EDITOR_DESCRIPTION, DEFAULT_UNDO_STATE_KEY
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics assumed")
 
@@ -859,6 +859,18 @@ class TestUndo:
         file_path = _write(tmp_path / "test.txt", "content\n")
         with pytest.raises(ValueError, match="No undo history"):
             await editor(command="undo_edit", path=file_path, tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_max_undo_entries_zero_disables_history(self, ctx, tmp_path):
+        # Opt-out: ``max_undo_entries=0`` skips the agent-state write on every
+        # mutating command, and ``undo_edit`` reports the feature is disabled.
+        file_path = _write(tmp_path / "test.txt", "hello\n")
+        no_undo = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_undo_entries=0)
+        await no_undo(command="str_replace", path=file_path, tool_context=ctx, old_str="hello", new_str="goodbye")
+        assert (tmp_path / "test.txt").read_text() == "goodbye\n"
+        assert ctx.agent.state.get(DEFAULT_UNDO_STATE_KEY) is None
+        with pytest.raises(ValueError, match="Undo is disabled"):
+            await no_undo(command="undo_edit", path=file_path, tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_snapshot_survives_across_agent_state_roundtrip(self, tmp_path):

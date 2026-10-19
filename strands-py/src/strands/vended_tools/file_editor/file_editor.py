@@ -26,8 +26,8 @@ _SNIPPET_LINES = 4
 _DEFAULT_MAX_FILE_SIZE = 1 * _MB
 _MAX_DIRECTORY_DEPTH = 2
 _MAX_FIND_LINE_HITS = 200
-_DEFAULT_MAX_UNDO_ENTRIES = 32
-_DEFAULT_MAX_UNDO_BYTES = 32 * _MB
+_DEFAULT_MAX_UNDO_ENTRIES = 16
+_DEFAULT_MAX_UNDO_BYTES = 8 * _MB
 
 DEFAULT_FILE_EDITOR_DESCRIPTION = (
     "Filesystem editor for viewing, creating, and editing files. Supports view (with "
@@ -115,10 +115,11 @@ def make_file_editor(
             commands. Defaults to 1 MB.
         max_undo_entries: Maximum number of distinct paths retained in the
             in-memory undo history *per agent*. Oldest entry is evicted on
-            overflow. Defaults to 32.
+            overflow. Set to ``0`` to disable undo entirely — mutating
+            commands then skip the agent-state write. Defaults to 16.
         max_undo_bytes: Approximate cap on total bytes of file content held in
             the per-agent undo history (UTF-8). Oldest entries are evicted
-            until the cap is met. Defaults to 32 MB.
+            until the cap is met. Defaults to 8 MB.
         undo_state_key: Key under which the undo history is stored in
             ``agent.state``. Two editors sharing the same key on the same
             agent will share undo history; use distinct keys to isolate them.
@@ -215,6 +216,8 @@ def make_file_editor(
             )
             return result
         if command == "undo_edit":
+            if max_undo_entries <= 0:
+                raise ValueError("Undo is disabled for this editor (max_undo_entries=0).")
             raw_history = state.get(undo_state_key) or {}
             if resolved not in raw_history:
                 raise ValueError(f"No undo history available for {resolved} in this session.")
@@ -483,6 +486,8 @@ def _commit_undo_update(
     Callers must invoke this only *after* the corresponding sandbox write has
     succeeded so a failed write does not overwrite a still-valid earlier entry.
     """
+    if max_entries <= 0:
+        return
     raw_history = state.get(state_key) or {}
     undo_history: dict[str, _UndoEntry] = {
         path: _UndoEntry.from_state(entry) for path, entry in raw_history.items()
