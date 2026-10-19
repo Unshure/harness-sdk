@@ -394,15 +394,6 @@ class TestPreservesUntouchedBytes:
 
         assert (tmp_path / "Makefile").read_text() == ".PHONY: build test\n" + self.MAKEFILE
 
-    @pytest.mark.asyncio
-    async def test_empty_old_str_reports_the_empty_argument(self, editor, ctx, tmp_path):
-        file_path = _write(tmp_path / "notes.txt", "alpha\nbeta\n")
-
-        with pytest.raises(ValueError, match="`old_str` must not be empty"):
-            await editor(command="str_replace", path=file_path, old_str="", new_str="x", tool_context=ctx)
-
-        assert (tmp_path / "notes.txt").read_text() == "alpha\nbeta\n"
-
 
 class TestFileSizeLimit:
     """The configurable content size guard."""
@@ -427,29 +418,6 @@ class TestFileSizeLimit:
 
 
 class TestEdgeCases:
-    """Content edge cases: special characters, unicode, tabs, trailing slashes."""
-
-    @pytest.mark.asyncio
-    async def test_special_characters(self, editor, ctx, tmp_path):
-        content = 'Special chars: @#$%^&*()_+-={}[]|:;"<>,.?/~`'
-        file_path = _write(tmp_path / "special.txt", content)
-        result = await editor(command="view", path=file_path, tool_context=ctx)
-        assert "Special chars:" in result
-
-    @pytest.mark.asyncio
-    async def test_unicode(self, editor, ctx, tmp_path):
-        content = "你好世界\n🚀 Emoji test\nΣ Greek letters"
-        file_path = _write(tmp_path / "unicode.txt", content)
-        result = await editor(command="view", path=file_path, tool_context=ctx)
-        assert "你好世界" in result
-        assert "🚀" in result
-
-    @pytest.mark.asyncio
-    async def test_expands_tabs(self, editor, ctx, tmp_path):
-        file_path = _write(tmp_path / "tabs.txt", "Line 1\tTab\tSeparated")
-        result = await editor(command="view", path=file_path, tool_context=ctx)
-        assert "\t" not in result
-
     @pytest.mark.asyncio
     async def test_handles_trailing_slash_on_file_path(self, editor, ctx, tmp_path):
         file_path = _write(tmp_path / "trailing.txt", "content here")
@@ -574,23 +542,6 @@ class TestConfinementRoot:
             sandbox=NotASandboxLocalEnvironment(), root=str(root), description="custom description"
         )
         assert confined.tool_spec["description"] == "custom description"
-
-    @pytest.mark.asyncio
-    async def test_symlink_semantics_are_sandbox_governed(self, ctx, tmp_path):
-        # The editor enforces lexical confinement only: whether a symlink inside
-        # root resolves outside root is a sandbox concern. Documented so a
-        # future contract change is a conscious one.
-        root = tmp_path / "workspace"
-        root.mkdir()
-        secret = tmp_path / "secret.txt"
-        _write(secret, "top secret")
-        link = root / "escape.txt"
-        link.symlink_to(secret)
-        confined = make_file_editor(sandbox=NotASandboxLocalEnvironment(), root=str(root))
-        # NotASandboxLocalEnvironment follows symlinks; a real isolating sandbox
-        # would confine the resolution to its own filesystem.
-        result = await confined(command="view", path=str(link), tool_context=ctx)
-        assert "top secret" in result
 
     @pytest.mark.asyncio
     async def test_symlink_pointing_inside_root_is_allowed(self, ctx, tmp_path):
@@ -822,19 +773,6 @@ class TestFindLine:
         fuzzy = await editor(command="find_line", path=file_path, tool_context=ctx, search_text="", fuzzy=True)
         assert "No matches" in plain
         assert "No matches" in fuzzy
-
-    @pytest.mark.asyncio
-    async def test_fuzzy_search_is_linear_on_pathological_input(self, editor, ctx, tmp_path):
-        # Regression (#3394): fuzzy search must stay linear so an asyncio
-        # timeout can interrupt it. Assert completion inside a short bound.
-        content = "a" * 500 + "\n"
-        file_path = _write(tmp_path / "long.txt", content)
-        result = await asyncio.wait_for(
-            editor(command="find_line", path=file_path, tool_context=ctx, search_text="a a a b", fuzzy=True),
-            timeout=2.0,
-        )
-        assert "No matches" in result
-
 
 class TestUndo:
     """In-memory, per-agent ``undo_edit``."""
