@@ -152,13 +152,13 @@ def make_file_editor(
     ) -> str:
         """Filesystem editor for viewing, creating, and editing files.
 
-        ``undo_edit`` restores the file at ``path`` to the content captured just
-        before the most recent ``str_replace`` or ``insert`` on that path in
-        this session; it is a single-step revert, not a stack.
-
         Args:
             command: The operation to perform: ``view``, ``create``,
                 ``str_replace``, ``insert``, ``find_line``, or ``undo_edit``.
+                ``undo_edit`` restores ``path`` to the content captured just
+                before the most recent ``str_replace`` or ``insert`` on that
+                path in this session — a single-step revert, not a stack, and
+                it does not track ``create`` or changes made by other tools.
             path: Absolute path to the file or directory.
             tool_context: Injected by the framework. Not user-facing.
             file_text: Content for new file (required for ``create``).
