@@ -320,18 +320,18 @@ function stripTrailingSep(p: string): string {
 
 function isInsideRoot(target: string, root: string): boolean {
   const normalizedRoot = stripTrailingSep(root)
-  const t = process.platform === 'win32' ? target.toLowerCase() : target
-  const r = process.platform === 'win32' ? normalizedRoot.toLowerCase() : normalizedRoot
-  if (t === r) return true
+  const comparableTarget = process.platform === 'win32' ? target.toLowerCase() : target
+  const comparableRoot = process.platform === 'win32' ? normalizedRoot.toLowerCase() : normalizedRoot
+  if (comparableTarget === comparableRoot) return true
   // Root can already end in a separator when it is the filesystem root (`/`)
   // or a Windows drive root (`C:\`) — stripTrailingSep preserves those. In
   // that case, concatenating another separator would produce `//` or `C:\\`
   // and every valid in-root path would fail startsWith.
-  const rEndsWithSep = r.endsWith('/') || r.endsWith('\\')
-  if (rEndsWithSep) return t.startsWith(r)
+  const rootEndsWithSep = comparableRoot.endsWith('/') || comparableRoot.endsWith('\\')
+  if (rootEndsWithSep) return comparableTarget.startsWith(comparableRoot)
   // Otherwise, match either separator so a Windows normalized path
   // (`C:\a\b`) matches a root that could be written with either style.
-  return t.startsWith(r + path.sep) || t.startsWith(r + '/')
+  return comparableTarget.startsWith(comparableRoot + path.sep) || comparableTarget.startsWith(comparableRoot + '/')
 }
 
 /**
@@ -460,7 +460,11 @@ function buildStrReplaceResult(
     const replacementLine = originalContent.substring(0, pos).split('\n').length - 1
     const lineInNew = replacementLine + index * lineDifference
     const startLine = Math.max(0, lineInNew - SNIPPET_LINES)
-    const endLine = Math.min(newLines.length, lineInNew + SNIPPET_LINES + lineDifference + 1)
+    // The replaced region in NEW spans `originalLines + lineDifference`
+    // (= insertedLines) lines starting at `lineInNew`, so the exclusive end
+    // of the SNIPPET_LINES trailing-context window is lineInNew + that span
+    // + SNIPPET_LINES.
+    const endLine = Math.min(newLines.length, lineInNew + originalLines + lineDifference + SNIPPET_LINES)
     return { snippet: newLines.slice(startLine, endLine).join('\n'), startLine }
   })
   const omitted = count - snippets.length
@@ -602,9 +606,10 @@ function commitUndoUpdate(
   if (maxEntries <= 0) return
   const rawHistory = (appState.get(stateKey) as Record<string, unknown> | undefined) ?? {}
   // Null-prototype object defends against a `__proto__` key sneaking in as an
-  // edit target; state round-trips plain objects, so re-wrap on load. Skip
-  // keys that would land on `Object.prototype` (`__proto__`, `constructor`,
-  // `hasOwnProperty`, …) rather than carrying them forward.
+  // edit target; state round-trips plain objects, so re-wrap on load. Only
+  // `__proto__` needs filtering: on a null-prototype target other reserved
+  // names (`constructor`, `hasOwnProperty`, …) land as plain own-keys with no
+  // prototype side-effect.
   const undoHistory = Object.create(null) as Record<string, UndoEntry>
   for (const key of Object.keys(rawHistory)) {
     if (key === '__proto__') continue
