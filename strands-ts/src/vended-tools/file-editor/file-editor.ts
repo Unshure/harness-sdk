@@ -59,28 +59,7 @@ const fileEditorInputSchema = z.object({
     ),
 })
 
-/**
- * File editor tool for viewing, creating, and editing files programmatically.
- *
- * Provides commands for viewing files/directories, creating files, string
- * replacement, line insertion, search, and single-step undo. All I/O routes
- * through the agent's configured sandbox.
- *
- * @example
- * ```typescript
- * import { fileEditor } from '@strands-agents/sdk/vended-tools/file-editor'
- * import { Agent } from '@strands-agents/sdk'
- *
- * const agent = new Agent({
- *   model: new BedrockModel({ region: 'us-east-1' }),
- *   tools: [fileEditor],
- * })
- *
- * await agent.invoke('View the file /tmp/test.txt')
- * await agent.invoke('Create a file /tmp/notes.txt with content "Hello World"')
- * await agent.invoke('Replace "Hello" with "Hi" in /tmp/notes.txt')
- * ```
- */
+/** Default description shown to the model. */
 export const DEFAULT_FILE_EDITOR_DESCRIPTION =
   'Filesystem editor for viewing, creating, and editing files. Supports view (with line ranges), create, str_replace (exact match; ambiguous matches must opt in via replace_all), insert, find_line, and undo_edit. Files must use absolute paths.'
 
