@@ -2,4 +2,4 @@
  * File editor tool for programmatic filesystem interaction.
  */
 
-export { fileEditor, makeFileEditor } from './file-editor.js'
+export { fileEditor, makeFileEditor, DEFAULT_FILE_EDITOR_DESCRIPTION } from './file-editor.js'
