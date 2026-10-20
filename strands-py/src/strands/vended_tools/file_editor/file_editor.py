@@ -10,6 +10,7 @@ sandbox read from ``tool_context.agent.sandbox`` at call time.
 from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -108,6 +109,7 @@ def make_file_editor(
     max_undo_entries: int = _DEFAULT_MAX_UNDO_ENTRIES,
     max_undo_bytes: int = _DEFAULT_MAX_UNDO_BYTES,
     undo_state_key: str = DEFAULT_UNDO_STATE_KEY,
+    media: bool = True,
 ) -> DecoratedFunctionTool:
     """Create a sandbox-routed file editor tool.
 
@@ -144,6 +146,9 @@ def make_file_editor(
         undo_state_key: Key under which the undo history is stored in
             ``agent.state``. Two editors sharing the same key on the same
             agent will share undo history; use distinct keys to isolate them.
+        media: Return images and binary documents as viewable media. Set
+            ``False`` for a model that rejects media blocks, and ``view``
+            describes those files in text instead.
 
     Returns:
         A decorated tool that performs file operations through the sandbox.
@@ -203,7 +208,7 @@ def make_file_editor(
 
         if command == "view":
             return await _handle_view(
-                active, resolved, view_range, max_file_size, tool_context.tool_use["toolUseId"]
+                active, resolved, view_range, max_file_size, tool_context.tool_use["toolUseId"], media
             )
         if command == "find_line":
             return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
@@ -625,12 +630,34 @@ async def _list_directory(sandbox: Sandbox, dir_path: str) -> str:
 # ---- Sandbox-path handlers ----
 
 
+def _document_name(file_path: str) -> str:
+    """Sanitize a filename into a model-safe document name.
+
+    Bedrock accepts only alphanumerics, whitespace, hyphens, parentheses, and square brackets
+    in document names, with no consecutive whitespace.
+    """
+    name = posixpath.basename(file_path)
+    name = re.sub(r"[^a-zA-Z0-9\s\-()\[\]]", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()
+    return name or "document"
+
+
+def _media_placeholder(file_path: str, kind: str, media_format: str, size: int) -> str:
+    """Describe a media file in text for models that reject media content blocks."""
+    return (
+        f"[{kind} file: {file_path} ({media_format}, {size} bytes). This model cannot view "
+        f"{kind.lower()} files, so its contents are not shown. Use shell tools if the file has a "
+        f"text-extractable form.]"
+    )
+
+
 async def _handle_view(
     sandbox: Sandbox,
     file_path: str,
     view_range: list[int] | None,
     max_size: int,
     tool_use_id: str,
+    media: bool,
 ) -> str | ToolResult:
     """Handle ``view``: numbered text, directory listing, or a media ToolResult for images/binary documents."""
     exists, is_dir = await _probe_sandbox_path(sandbox, file_path)
@@ -651,19 +678,25 @@ async def _handle_view(
         if len(raw) > max_size:
             raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_size} bytes)")
         if extension in _IMAGE_FORMATS:
+            image_format = _IMAGE_FORMATS[extension]
+            if not media:
+                return _media_placeholder(file_path, "Image", image_format, len(raw))
             return ToolResult(
                 toolUseId=tool_use_id,
                 status="success",
-                content=[{"image": {"format": _IMAGE_FORMATS[extension], "source": {"bytes": raw}}}],
+                content=[{"image": {"format": image_format, "source": {"bytes": raw}}}],
             )
+        document_format = _BINARY_DOCUMENT_FORMATS[extension]
+        if not media:
+            return _media_placeholder(file_path, "Document", document_format, len(raw))
         return ToolResult(
             toolUseId=tool_use_id,
             status="success",
             content=[
                 {
                     "document": {
-                        "format": _BINARY_DOCUMENT_FORMATS[extension],
-                        "name": posixpath.basename(file_path),
+                        "format": document_format,
+                        "name": _document_name(file_path),
                         "source": {"bytes": raw},
                     }
                 }

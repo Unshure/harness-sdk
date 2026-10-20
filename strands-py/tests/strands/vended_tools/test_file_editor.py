@@ -724,18 +724,18 @@ class TestViewMedia:
         assert block["image"]["source"]["bytes"] == payload
 
     @pytest.mark.parametrize(
-        ("filename", "expected_format"),
+        ("filename", "expected_format", "expected_name"),
         [
-            ("report.pdf", "pdf"),
-            ("report.doc", "doc"),
-            ("report.docx", "docx"),
-            ("report.xls", "xls"),
-            ("report.xlsx", "xlsx"),
+            ("report.pdf", "pdf", "report pdf"),
+            ("report.doc", "doc", "report doc"),
+            ("report.docx", "docx", "report docx"),
+            ("report.xls", "xls", "report xls"),
+            ("report.xlsx", "xlsx", "report xlsx"),
         ],
     )
     @pytest.mark.asyncio
     async def test_binary_document_returns_document_content_block(
-        self, editor, ctx, tmp_path, filename, expected_format
+        self, editor, ctx, tmp_path, filename, expected_format, expected_name
     ):
         file_path = tmp_path / filename
         payload = b"%PDF-1.4\n%\xd0\xd4\xc5\xd8\n" + b"\x00" * 32
@@ -744,7 +744,7 @@ class TestViewMedia:
         assert result["status"] == "success"
         (block,) = result["content"]
         assert block["document"]["format"] == expected_format
-        assert block["document"]["name"] == filename
+        assert block["document"]["name"] == expected_name
         assert block["document"]["source"]["bytes"] == payload
 
     @pytest.mark.parametrize("filename", ["notes.csv", "notes.html", "notes.txt", "notes.md"])
@@ -779,6 +779,39 @@ class TestViewMedia:
         editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_file_size=256)
         with pytest.raises(ValueError, match="exceeds maximum allowed size"):
             await editor(command="view", path=str(file_path), tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_media_false_returns_text_placeholder_for_image(self, ctx, tmp_path):
+        file_path = tmp_path / "photo.png"
+        payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+        file_path.write_bytes(payload)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), media=False)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert isinstance(result, str)
+        assert "Image file" in result
+        assert str(file_path) in result
+        assert "png" in result
+        assert f"{len(payload)} bytes" in result
+
+    @pytest.mark.asyncio
+    async def test_media_false_returns_text_placeholder_for_document(self, ctx, tmp_path):
+        file_path = tmp_path / "report.pdf"
+        payload = b"%PDF-1.4\n" + b"\x00" * 16
+        file_path.write_bytes(payload)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), media=False)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert isinstance(result, str)
+        assert "Document file" in result
+        assert "pdf" in result
+
+    @pytest.mark.asyncio
+    async def test_document_name_sanitizes_special_characters(self, editor, ctx, tmp_path):
+        # Bedrock allows only alphanumerics, whitespace, `-`, `()`, `[]` in document names.
+        file_path = tmp_path / "My Report (v2)!.pdf"
+        file_path.write_bytes(b"%PDF-1.4\n")
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        name = result["content"][0]["document"]["name"]
+        assert name == "My Report (v2) pdf"
 
 
 class TestStrReplaceReplaceAll:
