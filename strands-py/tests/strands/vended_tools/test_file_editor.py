@@ -773,12 +773,30 @@ class TestViewMedia:
             await editor(command="view", path=str(file_path), tool_context=ctx, view_range=[1, 2])
 
     @pytest.mark.asyncio
-    async def test_media_still_bound_by_max_file_size(self, ctx, tmp_path):
+    async def test_media_bound_by_max_media_file_size(self, ctx, tmp_path):
         file_path = tmp_path / "big.png"
         file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)
-        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_file_size=256)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_media_file_size=256)
         with pytest.raises(ValueError, match="exceeds maximum allowed size"):
             await editor(command="view", path=str(file_path), tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_media_not_bound_by_text_max_file_size(self, ctx, tmp_path):
+        # The text ``max_file_size`` cap does not apply to media; a small text
+        # cap must not block a modest image/document view.
+        file_path = tmp_path / "photo.png"
+        payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096
+        file_path.write_bytes(payload)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_file_size=256)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        assert result["content"][0]["image"]["source"]["bytes"] == payload
+
+    def test_document_name_truncated_to_200_chars(self):
+        from strands.vended_tools.file_editor.file_editor import _document_name
+
+        # Bedrock caps DocumentBlock.name at 200 characters.
+        assert len(_document_name(f"/tmp/{'a' * 300}.pdf")) == 200
 
     @pytest.mark.asyncio
     async def test_media_false_returns_text_placeholder_for_image(self, ctx, tmp_path):

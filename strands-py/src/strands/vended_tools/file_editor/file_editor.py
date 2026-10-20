@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
-from ...types.media import ImageFormat
 from ...types.tools import ToolContext, ToolResult
 
 if TYPE_CHECKING:
@@ -26,24 +25,21 @@ if TYPE_CHECKING:
 _MB = 1024 * 1024
 _SNIPPET_LINES = 4
 _DEFAULT_MAX_FILE_SIZE = 1 * _MB
+_DEFAULT_MAX_MEDIA_FILE_SIZE = 10 * _MB
 _MAX_DIRECTORY_DEPTH = 2
 _MAX_FIND_LINE_HITS = 200
 _MAX_REPORTED_MATCH_LINES = 10
 _DEFAULT_MAX_UNDO_ENTRIES = 16
 _DEFAULT_MAX_UNDO_BYTES = 8 * _MB
+# Bedrock DocumentBlock.name is capped at 200 characters by the Converse API.
+_MAX_DOCUMENT_NAME_LENGTH = 200
 
-# Extension → Bedrock media format. Detection is by extension because the
-# sandbox seam exposes no MIME metadata. `csv`, `html`, `txt`, and `md` are
+# Supported media extensions. Detection is by extension because the sandbox
+# seam exposes no MIME metadata. `csv`, `html`, `txt`, and `md` are
 # text-representable documents and stay on the numbered-lines path so
 # find_line and str_replace still work; only opaque binary documents route
 # through the ToolResult document block.
-_IMAGE_FORMATS: dict[str, ImageFormat] = {
-    "png": "png",
-    "jpg": "jpeg",
-    "jpeg": "jpeg",
-    "gif": "gif",
-    "webp": "webp",
-}
+_IMAGE_FORMATS = ("png", "jpg", "jpeg", "gif", "webp")
 _BINARY_DOCUMENT_FORMATS = ("pdf", "doc", "docx", "xls", "xlsx")
 
 DEFAULT_FILE_EDITOR_DESCRIPTION = (
@@ -101,6 +97,7 @@ def make_file_editor(
     description: str = DEFAULT_FILE_EDITOR_DESCRIPTION,
     root: str | None = None,
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
+    max_media_file_size: int = _DEFAULT_MAX_MEDIA_FILE_SIZE,
     max_undo_entries: int = _DEFAULT_MAX_UNDO_ENTRIES,
     max_undo_bytes: int = _DEFAULT_MAX_UNDO_BYTES,
     undo_state_key: str = DEFAULT_UNDO_STATE_KEY,
@@ -130,7 +127,10 @@ def make_file_editor(
             exists in the sandbox on every call. When ``root`` is ``None`` only
             the absolute-path check applies.
         max_file_size: Maximum file size (bytes) accepted by view/edit
-            commands. Defaults to 1 MB.
+            commands for text files. Defaults to 1 MB.
+        max_media_file_size: Maximum file size (bytes) accepted by ``view``
+            for images and binary documents, which skip the text/edit path
+            and are shipped verbatim to the model. Defaults to 10 MB.
         max_undo_entries: Maximum number of distinct paths retained in the
             in-memory undo history *per agent*. Oldest entry is evicted on
             overflow. Set to ``0`` to disable undo entirely — mutating
@@ -203,7 +203,13 @@ def make_file_editor(
 
         if command == "view":
             return await _handle_view(
-                active, resolved, view_range, max_file_size, tool_context.tool_use["toolUseId"], media
+                active,
+                resolved,
+                view_range,
+                max_file_size,
+                max_media_file_size,
+                tool_context.tool_use["toolUseId"],
+                media,
             )
         if command == "find_line":
             return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
@@ -629,18 +635,18 @@ def _document_name(file_path: str) -> str:
     """Sanitize a filename into a model-safe document name.
 
     Bedrock accepts only alphanumerics, whitespace, hyphens, parentheses, and square brackets
-    in document names, with no consecutive whitespace.
+    in document names, with no consecutive whitespace, and caps the length at 200 characters.
     """
     name = posixpath.basename(file_path)
     name = re.sub(r"[^a-zA-Z0-9\s\-()\[\]]", " ", name)
-    name = re.sub(r"\s+", " ", name).strip()
+    name = re.sub(r"\s+", " ", name).strip()[:_MAX_DOCUMENT_NAME_LENGTH]
     return name or "document"
 
 
-def _media_placeholder(file_path: str, kind: str, media_format: str, size: int) -> str:
+def _media_placeholder(file_path: str, kind: str, extension: str, size: int) -> str:
     """Describe a media file in text for models that reject media content blocks."""
     return (
-        f"[{kind} file: {file_path} ({media_format}, {size} bytes). This model cannot view "
+        f"[{kind} file: {file_path} ({extension}, {size} bytes). This model cannot view "
         f"{kind.lower()} files, so its contents are not shown. Use shell tools if the file has a "
         f"text-extractable form.]"
     )
@@ -651,6 +657,7 @@ async def _handle_view(
     file_path: str,
     view_range: list[int] | None,
     max_size: int,
+    max_media_size: int,
     tool_use_id: str,
     media: bool,
 ) -> str | ToolResult:
@@ -670,12 +677,12 @@ async def _handle_view(
         if view_range:
             raise ValueError("The `view_range` parameter is not allowed for image or binary document files.")
         raw = await sandbox.read_file(file_path)
-        if len(raw) > max_size:
-            raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_size} bytes)")
+        if len(raw) > max_media_size:
+            raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_media_size} bytes)")
         if extension in _IMAGE_FORMATS:
-            image_format = _IMAGE_FORMATS[extension]
             if not media:
-                return _media_placeholder(file_path, "Image", image_format, len(raw))
+                return _media_placeholder(file_path, "Image", extension, len(raw))
+            image_format = "jpeg" if extension == "jpg" else extension
             return ToolResult(
                 toolUseId=tool_use_id,
                 status="success",
