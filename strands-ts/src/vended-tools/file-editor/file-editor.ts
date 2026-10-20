@@ -14,6 +14,13 @@ const MAX_FIND_LINE_HITS = 200
 const MAX_REPORTED_MATCH_LINES = 10
 const DEFAULT_MAX_UNDO_ENTRIES = 16
 const DEFAULT_MAX_UNDO_BYTES = 8 * MB
+const MAX_REPLACE_ALL_SNIPPETS = 5
+
+// Platform-aware separator regexes: on POSIX, `\` is a legitimate filename
+// character and must not be treated as a separator; on Windows both `\` and
+// `/` are accepted.
+const PATH_SEP_SPLIT_RE = process.platform === 'win32' ? /[\\/]/ : /\//
+const TRAIL_SEP_RE = process.platform === 'win32' ? /[\\/]+$/ : /\/+$/
 
 const fileEditorInputSchema = z.object({
   command: z
@@ -221,6 +228,9 @@ export function makeFileEditor(
           throw new Error(`No undo history available for ${filePath} in this session.`)
         }
         const snapshot = undoEntryFromState(rawHistory[filePath])
+        if (snapshot === null) {
+          throw new Error(`Undo history for ${filePath} is corrupt; refusing to overwrite the file.`)
+        }
         await sandbox.writeText(filePath, snapshot.content)
         commitUndoUpdate(appState, undoStateKey, filePath, undefined, maxUndoEntries, maxUndoBytes)
         return `Reverted ${filePath} to its previous in-memory snapshot.`
@@ -283,9 +293,10 @@ function resolvePath(filePath: string, root: string | undefined): string {
   }
 
   // Reject `..` outright so default (no-root) deployments on host-filesystem
-  // sandboxes cannot be coerced out of a parent directory. Split on both
-  // separators because a caller may hand us either on Windows.
-  if (stripped.split(/[\\/]/).includes('..')) {
+  // sandboxes cannot be coerced out of a parent directory. Split on the
+  // platform's path separator(s); on POSIX `\` is a filename character and
+  // must not be treated as a boundary.
+  if (stripped.split(PATH_SEP_SPLIT_RE).includes('..')) {
     throw new Error('Invalid path: path traversal is not allowed')
   }
 
@@ -301,9 +312,10 @@ function resolvePath(filePath: string, root: string | undefined): string {
 
 function stripTrailingSep(p: string): string {
   // Preserve drive roots (`C:\`, `/`) but drop a trailing separator otherwise.
+  // On POSIX `\` is a filename character, so TRAIL_SEP_RE strips `/` only.
   if (p.length <= 1) return p
   if (process.platform === 'win32' && /^[A-Za-z]:[\\/]$/.test(p)) return p
-  return p.replace(/[\\/]+$/, '') || p
+  return p.replace(TRAIL_SEP_RE, '') || p
 }
 
 function isInsideRoot(target: string, root: string): boolean {
@@ -372,25 +384,34 @@ function buildStrReplaceResult(
   filePath: string,
   replaceAll: boolean,
   maxSize: number
-): { newContent: string; snippet: string; startLine: number; count: number } {
+): {
+  newContent: string
+  snippets: Array<{ snippet: string; startLine: number }>
+  count: number
+  omitted: number
+} {
   const newStrValue = newStr ?? ''
 
-  const occurrences = originalContent.split(oldStr).length - 1
+  // Walk non-overlapping matches once so occurrence count, error-line
+  // reporting, and snippet anchoring all come from the same positions.
+  const positions: number[] = []
+  {
+    let cursor = 0
+    while (cursor <= originalContent.length) {
+      const found = originalContent.indexOf(oldStr, cursor)
+      if (found === -1) break
+      positions.push(found)
+      cursor = found + oldStr.length
+    }
+  }
+  const occurrences = positions.length
+
   if (occurrences === 0) {
     throw new Error(`No replacement was performed, old_str \`${oldStr}\` did not appear verbatim in ${filePath}.`)
   }
   if (occurrences > 1 && !replaceAll) {
-    // Walk non-overlapping matches so the reported lines agree with the
-    // `split`-based occurrence count, and cap the list so a many-match file
-    // does not flood the model with a huge error.
-    const lineNumbers: number[] = []
-    let cursor = 0
-    while (lineNumbers.length < MAX_REPORTED_MATCH_LINES) {
-      const found = originalContent.indexOf(oldStr, cursor)
-      if (found === -1) break
-      lineNumbers.push(originalContent.slice(0, found).split('\n').length)
-      cursor = found + oldStr.length
-    }
+    const reported = positions.slice(0, MAX_REPORTED_MATCH_LINES)
+    const lineNumbers = reported.map((pos) => originalContent.slice(0, pos).split('\n').length)
     const ellipsis = occurrences > MAX_REPORTED_MATCH_LINES ? '...' : ''
     throw new Error(
       `No replacement was performed. ${occurrences} occurrences of old_str \`${oldStr}\` on lines ${JSON.stringify(lineNumbers)}${ellipsis}. Pass replace_all=true to replace every occurrence, or make old_str unique.`
@@ -417,17 +438,28 @@ function buildStrReplaceResult(
   const newContent = replaceAll
     ? originalContent.split(oldStr).join(newStrValue)
     : originalContent.replace(oldStr, () => newStrValue)
-  const replacementLine = originalContent.substring(0, originalContent.indexOf(oldStr)).split('\n').length - 1
+
   const insertedLines = newStrValue.split('\n').length
   const originalLines = oldStr.split('\n').length
   const lineDifference = insertedLines - originalLines
 
   const newLines = newContent.split('\n')
-  const startLine = Math.max(0, replacementLine - SNIPPET_LINES)
-  const endLine = Math.min(newLines.length, replacementLine + SNIPPET_LINES + lineDifference + 1)
-  const snippet = newLines.slice(startLine, endLine).join('\n')
+  // One snippet per replaced site, capped so a many-match file does not flood
+  // the model. Each site's line number must account for shifts introduced by
+  // earlier replacements, hence the running `k * lineDifference` offset.
+  const activePositions = positions.slice(0, count)
+  const snippetCap = replaceAll ? MAX_REPLACE_ALL_SNIPPETS : 1
+  const snippetsToShow = activePositions.slice(0, snippetCap)
+  const snippets = snippetsToShow.map((pos, index) => {
+    const replacementLine = originalContent.substring(0, pos).split('\n').length - 1
+    const lineInNew = replacementLine + index * lineDifference
+    const startLine = Math.max(0, lineInNew - SNIPPET_LINES)
+    const endLine = Math.min(newLines.length, lineInNew + SNIPPET_LINES + lineDifference + 1)
+    return { snippet: newLines.slice(startLine, endLine).join('\n'), startLine }
+  })
+  const omitted = count - snippets.length
 
-  return { newContent, snippet, startLine, count }
+  return { newContent, snippets, count, omitted }
 }
 
 /**
@@ -521,21 +553,24 @@ function collapseWhitespace(text: string): string {
 // ---- Undo history bookkeeping ----
 
 /**
- * Rebuild an `UndoEntry` from a serialized `appState` entry, re-encoding size
- * when absent.
+ * Rebuild an `UndoEntry` from a serialized `appState` entry, or `null` when the
+ * entry is missing or structurally invalid. Returning `null` for malformed
+ * state keeps `undo_edit` from silently writing an empty string to the file.
  */
-function undoEntryFromState(raw: unknown): UndoEntry {
+function undoEntryFromState(raw: unknown): UndoEntry | null {
   if (raw !== null && typeof raw === 'object' && 'content' in raw) {
     const content = (raw as { content: unknown }).content
     const size = (raw as { size?: unknown }).size
-    const contentString = typeof content === 'string' ? content : ''
+    if (typeof content !== 'string') return null
     return {
-      content: contentString,
-      size: typeof size === 'number' ? size : Buffer.byteLength(contentString, 'utf-8'),
+      content,
+      size: typeof size === 'number' ? size : Buffer.byteLength(content, 'utf-8'),
     }
   }
-  const contentString = typeof raw === 'string' ? raw : ''
-  return { content: contentString, size: Buffer.byteLength(contentString, 'utf-8') }
+  if (typeof raw === 'string') {
+    return { content: raw, size: Buffer.byteLength(raw, 'utf-8') }
+  }
+  return null
 }
 
 /**
@@ -561,10 +596,14 @@ function commitUndoUpdate(
   if (maxEntries <= 0) return
   const rawHistory = (appState.get(stateKey) as Record<string, unknown> | undefined) ?? {}
   // Null-prototype object defends against a `__proto__` key sneaking in as an
-  // edit target; state round-trips plain objects, so re-wrap on load.
+  // edit target; state round-trips plain objects, so re-wrap on load. Skip
+  // keys that would land on `Object.prototype` (`__proto__`, `constructor`,
+  // `hasOwnProperty`, …) rather than carrying them forward.
   const undoHistory = Object.create(null) as Record<string, UndoEntry>
   for (const key of Object.keys(rawHistory)) {
-    undoHistory[key] = undoEntryFromState(rawHistory[key])
+    if (key === '__proto__') continue
+    const entry = undoEntryFromState(rawHistory[key])
+    if (entry !== null) undoHistory[key] = entry
   }
 
   if (snapshot === undefined) {
@@ -596,7 +635,10 @@ function commitUndoUpdate(
     }
   }
 
-  const serialized: Record<string, { content: string; size: number }> = {}
+  // Null-prototype on the written-out object too: a plain `{}` would route
+  // assignment of a `__proto__` key through `Object.prototype`'s setter and
+  // corrupt the prototype chain instead of storing an own property.
+  const serialized = Object.create(null) as Record<string, { content: string; size: number }>
   for (const key of Object.keys(undoHistory)) {
     const entry = undoHistory[key]!
     serialized[key] = { content: entry.content, size: entry.size }
@@ -614,11 +656,9 @@ function commitUndoUpdate(
  * non-existence.
  */
 async function probeSandboxPath(sandbox: Sandbox, filePath: string): Promise<{ exists: boolean; isDir: boolean }> {
-  // Split on both separators because a Windows-normalized path can carry `\`,
-  // while a POSIX sandbox path uses `/`. On POSIX, `\` is a legitimate
-  // filename character, so the split delimiter must come from the path shape,
-  // not from a global rewrite.
-  const segments = filePath.split(/[\\/]/)
+  // Split on the platform's path separator(s): on Windows both `\` and `/`;
+  // on POSIX only `/`, because `\` is a legitimate filename character there.
+  const segments = filePath.split(PATH_SEP_SPLIT_RE)
   const name = segments.pop() ?? ''
   const parent = segments.join('/') || '/'
   try {
@@ -791,7 +831,7 @@ async function handleStrReplace(
 
   const fileContent = await readTextOrRejectBinary(sandbox, filePath, maxSize)
 
-  const { newContent, snippet, startLine, count } = buildStrReplaceResult(
+  const { newContent, snippets, count, omitted } = buildStrReplaceResult(
     fileContent,
     oldStr,
     newStr,
@@ -803,7 +843,11 @@ async function handleStrReplace(
   await sandbox.writeText(filePath, newContent)
 
   const suffix = replaceAll && count > 1 ? ` (${count} occurrences replaced)` : ''
-  const message = `The file ${filePath} has been edited.${suffix} ${makeOutput(snippet, `a snippet of ${filePath}`, startLine + 1)}Review the changes and make sure they are as expected. Edit the file again if necessary.`
+  const snippetSections = snippets
+    .map(({ snippet, startLine }) => makeOutput(snippet, `a snippet of ${filePath}`, startLine + 1))
+    .join('')
+  const omittedNote = omitted > 0 ? `(${omitted} additional replacement site(s) not shown.)\n` : ''
+  const message = `The file ${filePath} has been edited.${suffix} ${snippetSections}${omittedNote}Review the changes and make sure they are as expected. Edit the file again if necessary.`
   return { message, preEditContent: fileContent }
 }
 
