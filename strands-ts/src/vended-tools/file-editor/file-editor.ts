@@ -34,7 +34,7 @@ const fileEditorInputSchema = z.object({
   path: z.string().describe('Absolute path to the file or directory.'),
   file_text: z.string().optional().describe('Content for new file (required for create command).'),
   view_range: z
-    .tuple([z.number(), z.number()])
+    .tuple([z.number().int(), z.number().int()])
     .optional()
     .describe('Line range to view [start, end]. 1-indexed. End can be -1 for end of file.'),
   old_str: z
@@ -46,6 +46,7 @@ const fileEditorInputSchema = z.object({
   new_str: z.string().optional().describe('Replacement string (for str_replace and insert commands).'),
   insert_line: z
     .number()
+    .int()
     .optional()
     .describe('Line number where text should be inserted (0-indexed, required for insert command).'),
   search_text: z.string().optional().describe('Text to search for (required for find_line command).'),
@@ -79,6 +80,8 @@ const fileEditorInputSchema = z.object({
  * await agent.invoke('Create a file /tmp/notes.txt with content "Hello World"')
  * await agent.invoke('Replace "Hello" with "Hi" in /tmp/notes.txt')
  * ```
+ *
+ * @internal
  */
 export const DEFAULT_FILE_EDITOR_DESCRIPTION =
   'Filesystem editor for viewing, creating, and editing files. Supports view (with line ranges), create, str_replace (exact match; ambiguous matches must opt in via replace_all), insert, find_line, and undo_edit. Files must use absolute paths.'
@@ -96,6 +99,11 @@ interface UndoEntry {
   size: number
 }
 
+/**
+ * Options accepted by `makeFileEditor`.
+ *
+ * @internal
+ */
 export interface MakeFileEditorOptions {
   name?: string
   description?: string
@@ -460,11 +468,10 @@ function buildStrReplaceResult(
     const replacementLine = originalContent.substring(0, pos).split('\n').length - 1
     const lineInNew = replacementLine + index * lineDifference
     const startLine = Math.max(0, lineInNew - SNIPPET_LINES)
-    // The replaced region in NEW spans `originalLines + lineDifference`
-    // (= insertedLines) lines starting at `lineInNew`, so the exclusive end
-    // of the SNIPPET_LINES trailing-context window is lineInNew + that span
-    // + SNIPPET_LINES.
-    const endLine = Math.min(newLines.length, lineInNew + originalLines + lineDifference + SNIPPET_LINES)
+    // The replaced region in NEW spans `insertedLines` lines starting at
+    // `lineInNew`, so the exclusive end of the SNIPPET_LINES trailing-context
+    // window is lineInNew + insertedLines + SNIPPET_LINES.
+    const endLine = Math.min(newLines.length, lineInNew + insertedLines + SNIPPET_LINES)
     return { snippet: newLines.slice(startLine, endLine).join('\n'), startLine }
   })
   const omitted = count - snippets.length
@@ -671,18 +678,33 @@ async function probeSandboxPath(sandbox: Sandbox, filePath: string): Promise<{ e
   // on POSIX only `/`, because `\` is a legitimate filename character there.
   const segments = filePath.split(PATH_SEP_SPLIT_RE)
   const name = segments.pop() ?? ''
+  // An empty trailing segment means `filePath` is a filesystem root (`/` on
+  // POSIX, `C:\` on Windows). A root has no parent entry to inspect, so
+  // probe by listing it directly: a successful list proves it exists and is
+  // a directory.
+  if (name === '') {
+    try {
+      await sandbox.listFiles(filePath)
+      return { exists: true, isDir: true }
+    } catch (error) {
+      if (error instanceof SandboxPathNotFoundError) {
+        return { exists: false, isDir: false }
+      }
+      throw error
+    }
+  }
   const parent = segments.join('/') || '/'
   try {
-    const entry = (await sandbox.listFiles(parent)).find((e) => e.name === name)
+    const entry = (await sandbox.listFiles(parent)).find((candidate) => candidate.name === name)
     if (!entry) {
       return { exists: false, isDir: false }
     }
     return { exists: true, isDir: entry.isDir ?? false }
-  } catch (err) {
-    if (err instanceof SandboxPathNotFoundError) {
+  } catch (error) {
+    if (error instanceof SandboxPathNotFoundError) {
       return { exists: false, isDir: false }
     }
-    throw err
+    throw error
   }
 }
 
@@ -727,8 +749,14 @@ async function listDirectory(sandbox: Sandbox, dirPath: string): Promise<string>
     let entries
     try {
       entries = await sandbox.listFiles(currentPath)
-    } catch {
-      return
+    } catch (error) {
+      // A missing path (deleted between stat and walk, or a dangling symlink
+      // under a parent) is tolerable; other sandbox errors — permission,
+      // transport — surface to the caller.
+      if (error instanceof SandboxPathNotFoundError) {
+        return
+      }
+      throw error
     }
 
     for (const entry of entries) {

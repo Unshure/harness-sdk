@@ -72,5 +72,7 @@ export interface UndoEditInput {
 
 /**
  * Union type of all valid file editor inputs.
+ *
+ * @internal
  */
 export type FileEditorInput = ViewInput | CreateInput | StrReplaceInput | InsertInput | FindLineInput | UndoEditInput
