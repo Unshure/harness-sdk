@@ -291,10 +291,6 @@ class TestStrReplace:
 
     @pytest.mark.asyncio
     async def test_overlapping_match_counted_non_overlapping(self, editor, ctx, tmp_path):
-        # Regression: ``str.count`` reports non-overlapping matches, so the
-        # reported line list must walk by ``len(old_str)``, not by one.
-        # ``"aaaa"`` with ``old_str="aa"`` is 2 non-overlapping matches on
-        # the same line, not 3.
         file_path = _write(tmp_path / "test.txt", "aaaa\n")
         with pytest.raises(ValueError, match=r"2 occurrences .* \[1, 1\]\."):
             await editor(command="str_replace", path=file_path, tool_context=ctx, old_str="aa", new_str="b")
