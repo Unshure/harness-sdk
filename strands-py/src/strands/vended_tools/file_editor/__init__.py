@@ -1,6 +1,7 @@
 """Sandbox-routed file editor tool for viewing, creating, and editing files.
 
-Supports view (with line ranges), create, str_replace, and insert operations.
+Supports view (with line ranges), create, str_replace, insert, find_line, and
+undo_edit operations.
 
 Example Usage:
     ```python
