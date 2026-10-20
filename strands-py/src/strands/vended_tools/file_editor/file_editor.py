@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
-from ...types.media import DocumentFormat, ImageFormat
+from ...types.media import ImageFormat
 from ...types.tools import ToolContext, ToolResult
 
 if TYPE_CHECKING:
@@ -44,13 +44,7 @@ _IMAGE_FORMATS: dict[str, ImageFormat] = {
     "gif": "gif",
     "webp": "webp",
 }
-_BINARY_DOCUMENT_FORMATS: dict[str, DocumentFormat] = {
-    "pdf": "pdf",
-    "doc": "doc",
-    "docx": "docx",
-    "xls": "xls",
-    "xlsx": "xlsx",
-}
+_BINARY_DOCUMENT_FORMATS = ("pdf", "doc", "docx", "xls", "xlsx")
 
 DEFAULT_FILE_EDITOR_DESCRIPTION = (
     "Filesystem editor for viewing, creating, and editing files. Supports view (text with "
@@ -686,16 +680,15 @@ async def _handle_view(
                 status="success",
                 content=[{"image": {"format": image_format, "source": {"bytes": raw}}}],
             )
-        document_format = _BINARY_DOCUMENT_FORMATS[extension]
         if not media:
-            return _media_placeholder(file_path, "Document", document_format, len(raw))
+            return _media_placeholder(file_path, "Document", extension, len(raw))
         return ToolResult(
             toolUseId=tool_use_id,
             status="success",
             content=[
                 {
                     "document": {
-                        "format": document_format,
+                        "format": extension,
                         "name": _document_name(file_path),
                         "source": {"bytes": raw},
                     }
