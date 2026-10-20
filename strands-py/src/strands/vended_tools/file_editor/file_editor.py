@@ -47,10 +47,11 @@ _IMAGE_FORMATS: dict[str, ImageFormat] = {
 _BINARY_DOCUMENT_FORMATS = ("pdf", "doc", "docx", "xls", "xlsx")
 
 DEFAULT_FILE_EDITOR_DESCRIPTION = (
-    "Filesystem editor for viewing, creating, and editing files. Supports view (text with "
-    "line ranges; png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents returned as "
-    "media blocks), create, str_replace (exact match; ambiguous matches must opt in via "
-    "replace_all), insert, find_line, and undo_edit. Files must use absolute paths."
+    "Filesystem editor for viewing, creating, and editing files. Any file type: view "
+    "(text with line ranges; png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents "
+    "returned as media blocks). Text files only: create, str_replace (exact match; "
+    "ambiguous matches must opt in via replace_all), insert, find_line, and undo_edit. "
+    "Files must use absolute paths."
 )
 
 DEFAULT_UNDO_STATE_KEY = "file_editor.undo_history"
