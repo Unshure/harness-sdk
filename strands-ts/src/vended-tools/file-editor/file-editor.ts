@@ -392,6 +392,12 @@ function buildStrReplaceResult(
 } {
   const newStrValue = newStr ?? ''
 
+  // Empty old_str would make the indexOf walk below never advance; the
+  // handleStrReplace caller already rejects this, but keep the invariant local.
+  if (oldStr.length === 0) {
+    throw new Error('old_str must not be empty')
+  }
+
   // Walk non-overlapping matches once so occurrence count, error-line
   // reporting, and snippet anchoring all come from the same positions.
   const positions: number[] = []
