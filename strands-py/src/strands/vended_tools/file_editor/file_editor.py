@@ -26,6 +26,7 @@ _SNIPPET_LINES = 4
 _DEFAULT_MAX_FILE_SIZE = 1 * _MB
 _MAX_DIRECTORY_DEPTH = 2
 _MAX_FIND_LINE_HITS = 200
+_MAX_REPORTED_MATCH_LINES = 10
 _DEFAULT_MAX_UNDO_ENTRIES = 16
 _DEFAULT_MAX_UNDO_BYTES = 8 * _MB
 
@@ -359,14 +360,20 @@ def _build_str_replace_result(
     if occurrences == 0:
         raise ValueError(f"No replacement was performed, old_str `{old_str}` did not appear verbatim in {file_path}.")
     if occurrences > 1 and not replace_all:
+        # Walk non-overlapping matches so the reported lines agree with
+        # ``str.count``, and cap the list so a many-match file does not
+        # flood the model with a huge error.
         line_numbers: list[int] = []
         search_from = 0
-        while (match_index := original_content.find(old_str, search_from)) != -1:
+        while len(line_numbers) < _MAX_REPORTED_MATCH_LINES and (
+            match_index := original_content.find(old_str, search_from)
+        ) != -1:
             line_numbers.append(original_content.count("\n", 0, match_index) + 1)
-            search_from = match_index + 1
+            search_from = match_index + len(old_str)
+        shown = f"{line_numbers}{'...' if occurrences > _MAX_REPORTED_MATCH_LINES else ''}"
         raise ValueError(
-            f"No replacement was performed. Multiple occurrences of old_str `{old_str}` in lines "
-            f"{line_numbers}. Pass replace_all=True to replace every occurrence, or make old_str unique."
+            f"No replacement was performed. {occurrences} occurrences of old_str `{old_str}` on lines "
+            f"{shown}. Pass replace_all=True to replace every occurrence, or make old_str unique."
         )
 
     # Project the exact output size before allocating the substituted string so

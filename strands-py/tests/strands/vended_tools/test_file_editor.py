@@ -286,8 +286,24 @@ class TestStrReplace:
     @pytest.mark.asyncio
     async def test_multiple_occurrences_raises(self, editor, ctx, tmp_path):
         file_path = _write(tmp_path / "test.txt", "DUP Line 1\nLine 2\nDUP Line 3")
-        with pytest.raises(ValueError, match="Multiple occurrences"):
+        with pytest.raises(ValueError, match=r"2 occurrences .* \[1, 3\]"):
             await editor(command="str_replace", path=file_path, tool_context=ctx, old_str="DUP", new_str="NEW")
+
+    @pytest.mark.asyncio
+    async def test_overlapping_match_counted_non_overlapping(self, editor, ctx, tmp_path):
+        # Regression: ``str.count`` reports non-overlapping matches, so the
+        # reported line list must walk by ``len(old_str)``, not by one.
+        # ``"aaaa"`` with ``old_str="aa"`` is 2 non-overlapping matches on
+        # the same line, not 3.
+        file_path = _write(tmp_path / "test.txt", "aaaa\n")
+        with pytest.raises(ValueError, match=r"2 occurrences .* \[1, 1\]\."):
+            await editor(command="str_replace", path=file_path, tool_context=ctx, old_str="aa", new_str="b")
+
+    @pytest.mark.asyncio
+    async def test_many_occurrences_truncates_line_list(self, editor, ctx, tmp_path):
+        file_path = _write(tmp_path / "test.txt", "\n".join(["x"] * 50) + "\n")
+        with pytest.raises(ValueError, match=r"50 occurrences .* \[1, 2, 3, 4, 5, 6, 7, 8, 9, 10\]\.\.\."):
+            await editor(command="str_replace", path=file_path, tool_context=ctx, old_str="x", new_str="y")
 
     @pytest.mark.asyncio
     async def test_nonexistent_raises(self, editor, ctx, tmp_path):
