@@ -34,15 +34,10 @@ _DEFAULT_MAX_UNDO_BYTES = 8 * _MB
 # Bedrock DocumentBlock.name is capped at 200 characters by the Converse API.
 _MAX_DOCUMENT_NAME_LENGTH = 200
 
-# Supported media extensions. Detection is by extension because the sandbox
-# seam exposes no MIME metadata.
+# Detection is by extension because the sandbox seam exposes no MIME metadata.
 _IMAGE_FORMATS = ("png", "jpg", "jpeg", "gif", "webp")
-# Default set of binary-document extensions routed as DocumentBlock. Only PDF
-# by default: Anthropic's Files API accepts PDF and plain text documents but
-# raises TypeError('unsupported format') on office formats when the SDK
-# serializes conversation history, and because the bad block is already in
-# history the agent loop cannot recover. Opt into the full office set with
-# ``binary_document_formats`` on a provider that supports them (e.g. Bedrock).
+# PDF-only by default: office formats crash Anthropic unrecoverably. Opt in via
+# ``binary_document_formats`` on providers that support them.
 _DEFAULT_BINARY_DOCUMENT_FORMATS = ("pdf",)
 
 
@@ -60,11 +55,6 @@ def _default_description(*, media: bool, document_formats: tuple[str, ...]) -> s
         f"(exact match; ambiguous matches must opt in via replace_all), insert, find_line, "
         f"and undo_edit. Files must use absolute paths."
     )
-
-
-DEFAULT_FILE_EDITOR_DESCRIPTION = _default_description(
-    media=True, document_formats=_DEFAULT_BINARY_DOCUMENT_FORMATS
-)
 
 DEFAULT_UNDO_STATE_KEY = "file_editor.undo_history"
 
@@ -110,7 +100,7 @@ def make_file_editor(
     *,
     sandbox: Sandbox | None = None,
     name: str = "file_editor",
-    description: str = DEFAULT_FILE_EDITOR_DESCRIPTION,
+    description: str | None = None,
     root: str | None = None,
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
     max_media_file_size: int = _DEFAULT_MAX_MEDIA_FILE_SIZE,
@@ -136,7 +126,9 @@ def make_file_editor(
         sandbox: Sandbox to bind at creation. When ``None``, the agent's
             configured sandbox is used at call time.
         name: Tool name. Defaults to ``"file_editor"``.
-        description: Tool description shown to the model.
+        description: Tool description shown to the model. Defaults to a
+            description generated from ``media``, ``binary_document_formats``,
+            and ``root``.
         root: Optional absolute directory that confines every operation. Paths
             are normalized and must sit inside ``root``. Confinement is
             *lexical*: the editor does not follow symlinks itself. Filesystem
@@ -179,8 +171,9 @@ def make_file_editor(
     if root is not None and not posixpath.isabs(root):
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
+    binary_document_formats = tuple(ext.lower() for ext in binary_document_formats)
 
-    if description == DEFAULT_FILE_EDITOR_DESCRIPTION:
+    if description is None:
         description = _default_description(media=media, document_formats=binary_document_formats)
         if normalized_root is not None:
             description = f"{description} All paths must be absolute and inside {normalized_root}."
@@ -698,8 +691,6 @@ async def _handle_view(
         if view_range:
             raise ValueError("The `view_range` parameter is not allowed for image or binary document files.")
         raw = await sandbox.read_file(file_path)
-        if len(raw) > max_media_size:
-            raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_media_size} bytes)")
         if not media:
             kind = "image" if is_image else "document"
             return (
@@ -707,6 +698,8 @@ async def _handle_view(
                 f"This model cannot view {kind} files, so its contents are not shown. "
                 f"Use shell tools if the file has a text-extractable form.]"
             )
+        if len(raw) > max_media_size:
+            raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_media_size} bytes)")
         if is_image:
             image_format = "jpeg" if extension == "jpg" else extension
             return ToolResult(

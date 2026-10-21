@@ -16,7 +16,7 @@ from strands.agent.state import AgentState
 from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from strands.types.tools import ToolContext
 from strands.vended_tools.file_editor import file_editor, make_file_editor
-from strands.vended_tools.file_editor.file_editor import DEFAULT_FILE_EDITOR_DESCRIPTION, DEFAULT_UNDO_STATE_KEY
+from strands.vended_tools.file_editor.file_editor import DEFAULT_UNDO_STATE_KEY
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics assumed")
 
@@ -463,7 +463,9 @@ class TestToolMetadata:
         assert make_file_editor(name="sandbox_file_editor").tool_name == "sandbox_file_editor"
 
     def test_default_description(self):
-        assert make_file_editor().tool_spec["description"] == DEFAULT_FILE_EDITOR_DESCRIPTION
+        description = make_file_editor().tool_spec["description"]
+        assert "Filesystem editor" in description
+        assert "pdf documents returned as media blocks" in description
 
     def test_input_schema_excludes_context(self):
         props = file_editor.tool_spec["inputSchema"]["json"]["properties"]
@@ -803,6 +805,31 @@ class TestViewMedia:
         editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_media_file_size=256)
         with pytest.raises(ValueError, match="exceeds maximum allowed size"):
             await editor(command="view", path=str(file_path), tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_media_size_cap_skipped_when_media_false(self, ctx, tmp_path):
+        # media=False returns a text placeholder; the media byte cap is a
+        # provider-API constraint, so it should not reject the view.
+        file_path = tmp_path / "big.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(), media=False, max_media_file_size=256
+        )
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert isinstance(result, str)
+        assert "Image file" in result
+
+    @pytest.mark.asyncio
+    async def test_binary_document_formats_lowercased(self, ctx, tmp_path):
+        file_path = tmp_path / "report.docx"
+        payload = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(), binary_document_formats=("PDF", "DOCX")
+        )
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        assert result["content"][0]["document"]["format"] == "docx"
 
     @pytest.mark.asyncio
     async def test_media_not_bound_by_text_max_file_size(self, ctx, tmp_path):
