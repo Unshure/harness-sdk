@@ -38,7 +38,11 @@
 
 Strands Agents is an open-source SDK for building and running AI agents in Python and TypeScript. Choose Strands when you would otherwise write your own agent loop: it runs in your process with no hosted control plane, and it covers the jobs a hand-rolled loop grows into. In one SDK you get [lifecycle controls](https://strandsagents.com/docs/user-guide/concepts/agents/agent-loop/) (turn limits, token budgets, cancellation, stop reasons), [tools](https://strandsagents.com/docs/user-guide/concepts/tools/) and [structured output](https://strandsagents.com/docs/user-guide/concepts/agents/structured-output/), [MCP](https://strandsagents.com/docs/user-guide/concepts/tools/mcp-tools/), [multi-agent patterns](https://strandsagents.com/docs/user-guide/concepts/multi-agent/multi-agent-patterns/), [memory](https://strandsagents.com/docs/user-guide/concepts/memory/overview/) and [sessions](https://strandsagents.com/docs/user-guide/concepts/agents/session-management/), [model portability](https://strandsagents.com/docs/user-guide/concepts/model-providers/), [streaming](https://strandsagents.com/docs/user-guide/concepts/streaming/), [guardrails](https://strandsagents.com/docs/user-guide/safety-security/guardrails/), [tracing](https://strandsagents.com/docs/user-guide/observability-evaluation/observability/), and [evals](https://strandsagents.com/docs/user-guide/evals-sdk/quickstart/).
 
-Using a coding agent? Load the [Strands skill](.agents/skills/strands/) for framework selection, scaffolding, tools, MCP integration, and LangGraph migrations. Claude Code discovers it automatically in this repository through `.claude/skills/strands`; in another repository, copy or symlink the same folder to `.claude/skills/strands`.
+Using a coding agent? Install the Strands plugin for Claude Code, Codex, or Cursor.
+It adds framework selection, scaffolding, tool authoring, MCP server connections, web
+framework guides, and LangGraph migration guidance. See
+[Use Strands with AI coding agents](https://strandsagents.com/docs/user-guide/build-with-ai/)
+for install and verification steps.
 
 This monorepo contains Strands harness, the Python and TypeScript SDKs, the documentation site, and supporting packages:
 
@@ -123,7 +127,7 @@ The [Python SDK README](strands-py/) covers tools, model providers, MCP, and bid
 
 ### TypeScript
 
-Requires Node.js 22+:
+To build a Strands agent in TypeScript, install the SDK in a Node.js 22+ ESM project (`"type": "module"`):
 
 ```bash
 npm install @strands-agents/sdk
@@ -137,7 +141,11 @@ const result = await agent.invoke('What is the square root of 1764?')
 console.log(result)
 ```
 
-More in the [TypeScript SDK README](strands-ts/), including Zod-typed tools, structured output, and multi-agent patterns.
+`new Agent()` uses Amazon Bedrock by default, so configure AWS credentials or pass another model.
+Start with the [TypeScript quickstart](https://strandsagents.com/docs/user-guide/sdk/quickstart/typescript/)
+to configure a model provider, run your first agent, and add tools. Use the
+[TypeScript API reference](https://strandsagents.com/docs/api/typescript/) for the full
+SDK surface, or explore more examples in the [TypeScript SDK README](strands-ts/).
 
 ## Documentation
 
@@ -199,4 +207,3 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE.APACHE]
 ## Security
 
 See [CONTRIBUTING](CONTRIBUTING.md#security-issue-notifications) for more information.
-
