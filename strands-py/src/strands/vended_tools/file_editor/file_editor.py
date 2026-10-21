@@ -35,12 +35,10 @@ _DEFAULT_MAX_UNDO_BYTES = 8 * _MB
 _MAX_DOCUMENT_NAME_LENGTH = 200
 
 # Supported media extensions. Detection is by extension because the sandbox
-# seam exposes no MIME metadata. `csv`, `html`, `txt`, and `md` are
-# text-representable documents and stay on the numbered-lines path so
-# find_line and str_replace still work; only opaque binary documents route
-# through the ToolResult document block.
+# seam exposes no MIME metadata.
 _IMAGE_FORMATS = ("png", "jpg", "jpeg", "gif", "webp")
 _BINARY_DOCUMENT_FORMATS = ("pdf", "doc", "docx", "xls", "xlsx")
+
 
 def _default_description(*, media: bool) -> str:
     view_clause = (
@@ -765,6 +763,11 @@ async def _handle_str_replace(
     max_size: int,
 ) -> tuple[str, str]:
     """Handle the ``str_replace`` command: replace ``old_str`` (unique unless ``replace_all``).
+
+    Text-representable formats (``csv``, ``html``, ``txt``, ``md``) stay on
+    this path by design: they are listed as documents by Bedrock's taxonomy
+    but ``str_replace`` and ``find_line`` only work against the numbered
+    lines, so ``_BINARY_DOCUMENT_FORMATS`` deliberately excludes them.
 
     Returns ``(message, pre_edit_content)`` so the caller can snapshot the
     original content into the undo history after this coroutine's final await.
