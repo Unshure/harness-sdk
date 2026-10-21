@@ -10,12 +10,13 @@ sandbox read from ``tool_context.agent.sandbox`` at call time.
 from __future__ import annotations
 
 import posixpath
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
-from ...types.tools import ToolContext
+from ...types.tools import ToolContext, ToolResult
 
 if TYPE_CHECKING:
     from ...sandbox.base import Sandbox
@@ -24,17 +25,36 @@ if TYPE_CHECKING:
 _MB = 1024 * 1024
 _SNIPPET_LINES = 4
 _DEFAULT_MAX_FILE_SIZE = 1 * _MB
+_DEFAULT_MAX_MEDIA_FILE_SIZE = 5 * _MB
 _MAX_DIRECTORY_DEPTH = 2
 _MAX_FIND_LINE_HITS = 200
 _MAX_REPORTED_MATCH_LINES = 10
 _DEFAULT_MAX_UNDO_ENTRIES = 16
 _DEFAULT_MAX_UNDO_BYTES = 8 * _MB
+# Bedrock DocumentBlock.name is capped at 200 characters by the Converse API.
+_MAX_DOCUMENT_NAME_LENGTH = 200
 
-DEFAULT_FILE_EDITOR_DESCRIPTION = (
-    "Filesystem editor for viewing, creating, and editing files. Supports view (with "
-    "line ranges), create, str_replace (exact match; ambiguous matches must opt in via "
-    "replace_all), insert, find_line, and undo_edit. Files must use absolute paths."
-)
+# Detection is by extension because the sandbox seam exposes no MIME metadata.
+_IMAGE_FORMATS = ("png", "jpg", "jpeg", "gif", "webp")
+# PDF-only by default: office formats crash Anthropic unrecoverably. Opt in via
+# ``binary_document_formats`` on providers that support them.
+_DEFAULT_BINARY_DOCUMENT_FORMATS = ("pdf",)
+
+
+def _default_description(*, media: bool, document_formats: tuple[str, ...]) -> str:
+    docs = "/".join(document_formats)
+    view_clause = (
+        f"png/jpeg/gif/webp images and {docs} documents returned as media blocks"
+        if media
+        else f"png/jpeg/gif/webp images and {docs} documents described in text "
+        "(this agent cannot render media)"
+    )
+    return (
+        f"Filesystem editor for viewing, creating, and editing files. Any file type: view "
+        f"(text with line ranges; {view_clause}). Text files only: create, str_replace "
+        f"(exact match; ambiguous matches must opt in via replace_all), insert, find_line, "
+        f"and undo_edit. Files must use absolute paths."
+    )
 
 DEFAULT_UNDO_STATE_KEY = "file_editor.undo_history"
 
@@ -80,12 +100,15 @@ def make_file_editor(
     *,
     sandbox: Sandbox | None = None,
     name: str = "file_editor",
-    description: str = DEFAULT_FILE_EDITOR_DESCRIPTION,
+    description: str | None = None,
     root: str | None = None,
     max_file_size: int = _DEFAULT_MAX_FILE_SIZE,
+    max_media_file_size: int = _DEFAULT_MAX_MEDIA_FILE_SIZE,
     max_undo_entries: int = _DEFAULT_MAX_UNDO_ENTRIES,
     max_undo_bytes: int = _DEFAULT_MAX_UNDO_BYTES,
     undo_state_key: str = DEFAULT_UNDO_STATE_KEY,
+    media: bool = True,
+    binary_document_formats: tuple[str, ...] = _DEFAULT_BINARY_DOCUMENT_FORMATS,
 ) -> DecoratedFunctionTool:
     """Create a sandbox-routed file editor tool.
 
@@ -103,7 +126,9 @@ def make_file_editor(
         sandbox: Sandbox to bind at creation. When ``None``, the agent's
             configured sandbox is used at call time.
         name: Tool name. Defaults to ``"file_editor"``.
-        description: Tool description shown to the model.
+        description: Tool description shown to the model. Defaults to a
+            description generated from ``media``, ``binary_document_formats``,
+            and ``root``.
         root: Optional absolute directory that confines every operation. Paths
             are normalized and must sit inside ``root``. Confinement is
             *lexical*: the editor does not follow symlinks itself. Filesystem
@@ -111,7 +136,12 @@ def make_file_editor(
             exists in the sandbox on every call. When ``root`` is ``None`` only
             the absolute-path check applies.
         max_file_size: Maximum file size (bytes) accepted by view/edit
-            commands. Defaults to 1 MB.
+            commands for text files. Defaults to 1 MB.
+        max_media_file_size: Maximum file size (bytes) accepted by ``view``
+            for images and binary documents, which skip the text/edit path
+            and are shipped verbatim to the model. Defaults to 5 MB, matched
+            to the strictest common provider cap (Anthropic images at 5 MB,
+            Bedrock documents at 4.5 MB and images at 3.75 MB).
         max_undo_entries: Maximum number of distinct paths retained in the
             in-memory undo history *per agent*. Oldest entry is evicted on
             overflow. Set to ``0`` to disable undo entirely — mutating
@@ -122,6 +152,15 @@ def make_file_editor(
         undo_state_key: Key under which the undo history is stored in
             ``agent.state``. Two editors sharing the same key on the same
             agent will share undo history; use distinct keys to isolate them.
+        media: Return images and binary documents as viewable media. Set
+            ``False`` for a model that rejects media blocks, and ``view``
+            describes those files in text instead.
+        binary_document_formats: Extensions routed as binary DocumentBlocks.
+            Defaults to ``("pdf",)``. Opt into the full office set
+            ``("pdf", "doc", "docx", "xls", "xlsx")`` on a provider that
+            supports them; Anthropic raises a non-recoverable
+            ``TypeError("unsupported format")`` when office-format blocks
+            re-enter conversation history.
 
     Returns:
         A decorated tool that performs file operations through the sandbox.
@@ -132,9 +171,12 @@ def make_file_editor(
     if root is not None and not posixpath.isabs(root):
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
+    binary_document_formats = tuple(ext.lower() for ext in binary_document_formats)
 
-    if normalized_root is not None and description == DEFAULT_FILE_EDITOR_DESCRIPTION:
-        description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
+    if description is None:
+        description = _default_description(media=media, document_formats=binary_document_formats)
+        if normalized_root is not None:
+            description = f"{description} All paths must be absolute and inside {normalized_root}."
 
     @tool(name=name, description=description, context="tool_context")
     async def file_editor_tool(
@@ -149,7 +191,7 @@ def make_file_editor(
         search_text: str | None = None,
         fuzzy: bool = False,
         replace_all: bool = False,
-    ) -> str:
+    ) -> str | ToolResult:
         """Filesystem editor for viewing, creating, and editing files.
 
         Args:
@@ -180,7 +222,16 @@ def make_file_editor(
         resolved = _resolve_path(path, normalized_root)
 
         if command == "view":
-            return await _handle_view(active, resolved, view_range, max_file_size)
+            return await _handle_view(
+                active,
+                resolved,
+                view_range,
+                max_file_size,
+                max_media_file_size,
+                tool_context.tool_use["toolUseId"],
+                media,
+                binary_document_formats,
+            )
         if command == "find_line":
             return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
 
@@ -601,8 +652,29 @@ async def _list_directory(sandbox: Sandbox, dir_path: str) -> str:
 # ---- Sandbox-path handlers ----
 
 
-async def _handle_view(sandbox: Sandbox, file_path: str, view_range: list[int] | None, max_size: int) -> str:
-    """Handle the ``view`` command: render a file with line numbers or list a directory."""
+def _document_name(file_path: str) -> str:
+    """Sanitize a filename into a model-safe document name.
+
+    Bedrock accepts only alphanumerics, whitespace, hyphens, parentheses, and square brackets
+    in document names, with no consecutive whitespace, and caps the length at 200 characters.
+    """
+    name = posixpath.basename(file_path)
+    name = re.sub(r"[^a-zA-Z0-9\s\-()\[\]]", " ", name)
+    name = re.sub(r"\s+", " ", name).strip()[:_MAX_DOCUMENT_NAME_LENGTH]
+    return name or "document"
+
+
+async def _handle_view(
+    sandbox: Sandbox,
+    file_path: str,
+    view_range: list[int] | None,
+    max_size: int,
+    max_media_size: int,
+    tool_use_id: str,
+    media: bool,
+    binary_document_formats: tuple[str, ...],
+) -> str | ToolResult:
+    """Handle ``view``: numbered text, directory listing, or a media ToolResult for images/binary documents."""
     exists, is_dir = await _probe_sandbox_path(sandbox, file_path)
     if not exists:
         raise ValueError(f"The path {file_path} does not exist. Please provide a valid path.")
@@ -611,6 +683,43 @@ async def _handle_view(sandbox: Sandbox, file_path: str, view_range: list[int] |
         if view_range:
             raise ValueError("The `view_range` parameter is not allowed when `path` points to a directory.")
         return await _list_directory(sandbox, file_path)
+
+    extension = posixpath.splitext(file_path)[1].lstrip(".").lower()
+
+    is_image = extension in _IMAGE_FORMATS
+    if is_image or extension in binary_document_formats:
+        if view_range:
+            raise ValueError("The `view_range` parameter is not allowed for image or binary document files.")
+        raw = await sandbox.read_file(file_path)
+        if not media:
+            kind = "image" if is_image else "document"
+            return (
+                f"[{kind.capitalize()} file: {file_path} ({extension}, {len(raw)} bytes). "
+                f"This model cannot view {kind} files, so its contents are not shown. "
+                f"Use shell tools if the file has a text-extractable form.]"
+            )
+        if len(raw) > max_media_size:
+            raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_media_size} bytes)")
+        if is_image:
+            image_format = "jpeg" if extension == "jpg" else extension
+            return ToolResult(
+                toolUseId=tool_use_id,
+                status="success",
+                content=[{"image": {"format": image_format, "source": {"bytes": raw}}}],
+            )
+        return ToolResult(
+            toolUseId=tool_use_id,
+            status="success",
+            content=[
+                {
+                    "document": {
+                        "format": extension,
+                        "name": _document_name(file_path),
+                        "source": {"bytes": raw},
+                    }
+                }
+            ],
+        )
 
     file_content = await _read_text_or_reject_binary(sandbox, file_path, max_size)
 
@@ -665,6 +774,11 @@ async def _handle_str_replace(
     max_size: int,
 ) -> tuple[str, str]:
     """Handle the ``str_replace`` command: replace ``old_str`` (unique unless ``replace_all``).
+
+    Text-representable formats (``csv``, ``html``, ``txt``, ``md``) stay on
+    this path by design: they are listed as documents by Bedrock's taxonomy
+    but ``str_replace`` and ``find_line`` only work against the numbered
+    lines, so ``binary_document_formats`` deliberately excludes them.
 
     Returns ``(message, pre_edit_content)`` so the caller can snapshot the
     original content into the undo history after this coroutine's final await.

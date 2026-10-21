@@ -16,7 +16,7 @@ from strands.agent.state import AgentState
 from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from strands.types.tools import ToolContext
 from strands.vended_tools.file_editor import file_editor, make_file_editor
-from strands.vended_tools.file_editor.file_editor import DEFAULT_FILE_EDITOR_DESCRIPTION, DEFAULT_UNDO_STATE_KEY
+from strands.vended_tools.file_editor.file_editor import DEFAULT_UNDO_STATE_KEY
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX path semantics assumed")
 
@@ -463,7 +463,9 @@ class TestToolMetadata:
         assert make_file_editor(name="sandbox_file_editor").tool_name == "sandbox_file_editor"
 
     def test_default_description(self):
-        assert make_file_editor().tool_spec["description"] == DEFAULT_FILE_EDITOR_DESCRIPTION
+        description = make_file_editor().tool_spec["description"]
+        assert "Filesystem editor" in description
+        assert "pdf documents returned as media blocks" in description
 
     def test_input_schema_excludes_context(self):
         props = file_editor.tool_spec["inputSchema"]["json"]["properties"]
@@ -695,6 +697,190 @@ class TestBinaryRejection:
         file_path.write_bytes(b"\xff\xfe" + "hello world".encode("utf-16-le"))
         with pytest.raises(ValueError, match="UTF-16"):
             await editor(command="view", path=str(file_path), tool_context=ctx)
+
+
+class TestViewMedia:
+    """``view`` returns a media-shaped ToolResult for images and binary documents."""
+
+    @pytest.mark.parametrize(
+        ("filename", "expected_format"),
+        [
+            ("photo.png", "png"),
+            ("photo.jpg", "jpeg"),
+            ("photo.jpeg", "jpeg"),
+            ("photo.gif", "gif"),
+            ("photo.webp", "webp"),
+            ("photo.PNG", "png"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_image_returns_image_content_block(self, editor, ctx, tmp_path, filename, expected_format):
+        file_path = tmp_path / filename
+        payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        assert result["toolUseId"] == "test-id"
+        (block,) = result["content"]
+        assert block["image"]["format"] == expected_format
+        assert block["image"]["source"]["bytes"] == payload
+
+    @pytest.mark.asyncio
+    async def test_pdf_returns_document_content_block_by_default(self, editor, ctx, tmp_path):
+        file_path = tmp_path / "report.pdf"
+        payload = b"%PDF-1.4\n%\xd0\xd4\xc5\xd8\n" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        (block,) = result["content"]
+        assert block["document"]["format"] == "pdf"
+        assert block["document"]["name"] == "report pdf"
+        assert block["document"]["source"]["bytes"] == payload
+
+    @pytest.mark.parametrize(
+        ("filename", "expected_format", "expected_name"),
+        [
+            ("report.doc", "doc", "report doc"),
+            ("report.docx", "docx", "report docx"),
+            ("report.xls", "xls", "report xls"),
+            ("report.xlsx", "xlsx", "report xlsx"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_office_formats_opt_in_route_as_document(
+        self, ctx, tmp_path, filename, expected_format, expected_name
+    ):
+        # Office formats are off by default because Anthropic raises an
+        # unrecoverable TypeError when they re-enter conversation history.
+        # Opt in via ``binary_document_formats``.
+        file_path = tmp_path / filename
+        payload = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(),
+            binary_document_formats=("pdf", "doc", "docx", "xls", "xlsx"),
+        )
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        (block,) = result["content"]
+        assert block["document"]["format"] == expected_format
+        assert block["document"]["name"] == expected_name
+        assert block["document"]["source"]["bytes"] == payload
+
+    @pytest.mark.asyncio
+    async def test_office_formats_rejected_by_default_as_binary(self, editor, ctx, tmp_path):
+        # With the default ``("pdf",)``, a .docx falls to the text path and is
+        # rejected as binary — not routed as a DocumentBlock.
+        file_path = tmp_path / "report.docx"
+        file_path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32)
+        with pytest.raises(ValueError, match="binary file"):
+            await editor(command="view", path=str(file_path), tool_context=ctx)
+
+    @pytest.mark.parametrize("filename", ["notes.csv", "notes.html", "notes.txt", "notes.md"])
+    @pytest.mark.asyncio
+    async def test_text_representable_documents_stay_on_text_path(self, editor, ctx, tmp_path, filename):
+        # csv/html/txt/md are documents by Bedrock's taxonomy but are text-
+        # representable, so view keeps them on the numbered-lines path where
+        # find_line and str_replace still work.
+        file_path = _write(tmp_path / filename, "alpha\nbeta\n")
+        result = await editor(command="view", path=file_path, tool_context=ctx)
+        assert isinstance(result, str)
+        assert "alpha" in result and "beta" in result
+
+    @pytest.mark.parametrize(
+        ("filename", "payload"),
+        [("photo.png", b"\x89PNG\r\n\x1a\n"), ("report.pdf", b"%PDF-1.4\n")],
+    )
+    @pytest.mark.asyncio
+    async def test_view_range_rejected_on_media(self, editor, ctx, tmp_path, filename, payload):
+        file_path = tmp_path / filename
+        file_path.write_bytes(payload)
+        with pytest.raises(ValueError, match="view_range"):
+            await editor(command="view", path=str(file_path), tool_context=ctx, view_range=[1, 2])
+
+    @pytest.mark.asyncio
+    async def test_media_bound_by_max_media_file_size(self, ctx, tmp_path):
+        file_path = tmp_path / "big.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_media_file_size=256)
+        with pytest.raises(ValueError, match="exceeds maximum allowed size"):
+            await editor(command="view", path=str(file_path), tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_media_size_cap_skipped_when_media_false(self, ctx, tmp_path):
+        # media=False returns a text placeholder; the media byte cap is a
+        # provider-API constraint, so it should not reject the view.
+        file_path = tmp_path / "big.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(), media=False, max_media_file_size=256
+        )
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert isinstance(result, str)
+        assert "Image file" in result
+
+    @pytest.mark.asyncio
+    async def test_binary_document_formats_lowercased(self, ctx, tmp_path):
+        file_path = tmp_path / "report.docx"
+        payload = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(), binary_document_formats=("PDF", "DOCX")
+        )
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        assert result["content"][0]["document"]["format"] == "docx"
+
+    @pytest.mark.asyncio
+    async def test_media_not_bound_by_text_max_file_size(self, ctx, tmp_path):
+        # The text ``max_file_size`` cap does not apply to media; a small text
+        # cap must not block a modest image/document view.
+        file_path = tmp_path / "photo.png"
+        payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096
+        file_path.write_bytes(payload)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), max_file_size=256)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        assert result["content"][0]["image"]["source"]["bytes"] == payload
+
+    def test_document_name_truncated_to_200_chars(self):
+        from strands.vended_tools.file_editor.file_editor import _document_name
+
+        # Bedrock caps DocumentBlock.name at 200 characters.
+        assert len(_document_name(f"/tmp/{'a' * 300}.pdf")) == 200
+
+    @pytest.mark.asyncio
+    async def test_media_false_returns_text_placeholder_for_image(self, ctx, tmp_path):
+        file_path = tmp_path / "photo.png"
+        payload = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+        file_path.write_bytes(payload)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), media=False)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert isinstance(result, str)
+        assert "Image file" in result
+        assert str(file_path) in result
+        assert "png" in result
+        assert f"{len(payload)} bytes" in result
+
+    @pytest.mark.asyncio
+    async def test_media_false_returns_text_placeholder_for_document(self, ctx, tmp_path):
+        file_path = tmp_path / "report.pdf"
+        payload = b"%PDF-1.4\n" + b"\x00" * 16
+        file_path.write_bytes(payload)
+        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), media=False)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert isinstance(result, str)
+        assert "Document file" in result
+        assert "pdf" in result
+
+    @pytest.mark.asyncio
+    async def test_document_name_sanitizes_special_characters(self, editor, ctx, tmp_path):
+        # Bedrock allows only alphanumerics, whitespace, `-`, `()`, `[]` in document names.
+        file_path = tmp_path / "My Report (v2)!.pdf"
+        file_path.write_bytes(b"%PDF-1.4\n")
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        name = result["content"][0]["document"]["name"]
+        assert name == "My Report (v2) pdf"
 
 
 class TestStrReplaceReplaceAll:
