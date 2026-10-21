@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 _MB = 1024 * 1024
 _SNIPPET_LINES = 4
 _DEFAULT_MAX_FILE_SIZE = 1 * _MB
-_DEFAULT_MAX_MEDIA_FILE_SIZE = 10 * _MB
+_DEFAULT_MAX_MEDIA_FILE_SIZE = 5 * _MB
 _MAX_DIRECTORY_DEPTH = 2
 _MAX_FIND_LINE_HITS = 200
 _MAX_REPORTED_MATCH_LINES = 10
@@ -42,13 +42,22 @@ _MAX_DOCUMENT_NAME_LENGTH = 200
 _IMAGE_FORMATS = ("png", "jpg", "jpeg", "gif", "webp")
 _BINARY_DOCUMENT_FORMATS = ("pdf", "doc", "docx", "xls", "xlsx")
 
-DEFAULT_FILE_EDITOR_DESCRIPTION = (
-    "Filesystem editor for viewing, creating, and editing files. Any file type: view "
-    "(text with line ranges; png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents "
-    "returned as media blocks). Text files only: create, str_replace (exact match; "
-    "ambiguous matches must opt in via replace_all), insert, find_line, and undo_edit. "
-    "Files must use absolute paths."
-)
+def _default_description(*, media: bool) -> str:
+    view_clause = (
+        "png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents returned as media blocks"
+        if media
+        else "png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents described in text "
+        "(this agent cannot render media)"
+    )
+    return (
+        f"Filesystem editor for viewing, creating, and editing files. Any file type: view "
+        f"(text with line ranges; {view_clause}). Text files only: create, str_replace "
+        f"(exact match; ambiguous matches must opt in via replace_all), insert, find_line, "
+        f"and undo_edit. Files must use absolute paths."
+    )
+
+
+DEFAULT_FILE_EDITOR_DESCRIPTION = _default_description(media=True)
 
 DEFAULT_UNDO_STATE_KEY = "file_editor.undo_history"
 
@@ -130,7 +139,9 @@ def make_file_editor(
             commands for text files. Defaults to 1 MB.
         max_media_file_size: Maximum file size (bytes) accepted by ``view``
             for images and binary documents, which skip the text/edit path
-            and are shipped verbatim to the model. Defaults to 10 MB.
+            and are shipped verbatim to the model. Defaults to 5 MB, matched
+            to the strictest common provider cap (Anthropic images at 5 MB,
+            Bedrock documents at 4.5 MB and images at 3.75 MB).
         max_undo_entries: Maximum number of distinct paths retained in the
             in-memory undo history *per agent*. Oldest entry is evicted on
             overflow. Set to ``0`` to disable undo entirely — mutating
@@ -155,8 +166,10 @@ def make_file_editor(
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
 
-    if normalized_root is not None and description == DEFAULT_FILE_EDITOR_DESCRIPTION:
-        description = f"{DEFAULT_FILE_EDITOR_DESCRIPTION} All paths must be absolute and inside {normalized_root}."
+    if description == DEFAULT_FILE_EDITOR_DESCRIPTION:
+        description = _default_description(media=media)
+        if normalized_root is not None:
+            description = f"{description} All paths must be absolute and inside {normalized_root}."
 
     @tool(name=name, description=description, context="tool_context")
     async def file_editor_tool(
@@ -643,15 +656,6 @@ def _document_name(file_path: str) -> str:
     return name or "document"
 
 
-def _media_placeholder(file_path: str, kind: str, extension: str, size: int) -> str:
-    """Describe a media file in text for models that reject media content blocks."""
-    return (
-        f"[{kind} file: {file_path} ({extension}, {size} bytes). This model cannot view "
-        f"{kind.lower()} files, so its contents are not shown. Use shell tools if the file has a "
-        f"text-extractable form.]"
-    )
-
-
 async def _handle_view(
     sandbox: Sandbox,
     file_path: str,
@@ -673,23 +677,27 @@ async def _handle_view(
 
     extension = posixpath.splitext(file_path)[1].lstrip(".").lower()
 
-    if extension in _IMAGE_FORMATS or extension in _BINARY_DOCUMENT_FORMATS:
+    is_image = extension in _IMAGE_FORMATS
+    if is_image or extension in _BINARY_DOCUMENT_FORMATS:
         if view_range:
             raise ValueError("The `view_range` parameter is not allowed for image or binary document files.")
         raw = await sandbox.read_file(file_path)
         if len(raw) > max_media_size:
             raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_media_size} bytes)")
-        if extension in _IMAGE_FORMATS:
-            if not media:
-                return _media_placeholder(file_path, "Image", extension, len(raw))
+        if not media:
+            kind = "image" if is_image else "document"
+            return (
+                f"[{kind.capitalize()} file: {file_path} ({extension}, {len(raw)} bytes). "
+                f"This model cannot view {kind} files, so its contents are not shown. "
+                f"Use shell tools if the file has a text-extractable form.]"
+            )
+        if is_image:
             image_format = "jpeg" if extension == "jpg" else extension
             return ToolResult(
                 toolUseId=tool_use_id,
                 status="success",
                 content=[{"image": {"format": image_format, "source": {"bytes": raw}}}],
             )
-        if not media:
-            return _media_placeholder(file_path, "Document", extension, len(raw))
         return ToolResult(
             toolUseId=tool_use_id,
             status="success",

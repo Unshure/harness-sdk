@@ -758,17 +758,14 @@ class TestViewMedia:
         assert isinstance(result, str)
         assert "alpha" in result and "beta" in result
 
+    @pytest.mark.parametrize(
+        ("filename", "payload"),
+        [("photo.png", b"\x89PNG\r\n\x1a\n"), ("report.pdf", b"%PDF-1.4\n")],
+    )
     @pytest.mark.asyncio
-    async def test_view_range_rejected_on_image(self, editor, ctx, tmp_path):
-        file_path = tmp_path / "photo.png"
-        file_path.write_bytes(b"\x89PNG\r\n\x1a\n")
-        with pytest.raises(ValueError, match="view_range"):
-            await editor(command="view", path=str(file_path), tool_context=ctx, view_range=[1, 2])
-
-    @pytest.mark.asyncio
-    async def test_view_range_rejected_on_document(self, editor, ctx, tmp_path):
-        file_path = tmp_path / "report.pdf"
-        file_path.write_bytes(b"%PDF-1.4\n")
+    async def test_view_range_rejected_on_media(self, editor, ctx, tmp_path, filename, payload):
+        file_path = tmp_path / filename
+        file_path.write_bytes(payload)
         with pytest.raises(ValueError, match="view_range"):
             await editor(command="view", path=str(file_path), tool_context=ctx, view_range=[1, 2])
 
