@@ -10,7 +10,7 @@ from typing import Any
 
 from ..types.tools import AgentTool
 from ..vended_tools.file_editor import make_file_editor
-from ..vended_tools.file_editor.file_editor import DEFAULT_FILE_EDITOR_DESCRIPTION
+from ..vended_tools.file_editor.file_editor import _DEFAULT_BINARY_DOCUMENT_FORMATS, _default_description
 from ..vended_tools.shell import make_shell
 from ..vended_tools.shell.types import SANDBOX_SHELL_DESCRIPTION
 from .posix_shell import PosixShellSandbox, build_shell_env_prefix
@@ -189,7 +189,10 @@ class SshSandbox(PosixShellSandbox):
             make_file_editor(
                 sandbox=self,
                 name="sandbox_file_editor",
-                description=f'{DEFAULT_FILE_EDITOR_DESCRIPTION} Files are on host "{self.host}".',
+                description=(
+                    f"{_default_description(media=True, document_formats=_DEFAULT_BINARY_DOCUMENT_FORMATS)} "
+                    f'Files are on host "{self.host}".'
+                ),
             ),
             make_shell(
                 sandbox=self,

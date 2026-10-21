@@ -12,10 +12,11 @@ from __future__ import annotations
 import posixpath
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ...sandbox.errors import SandboxPathNotFoundError
 from ...tools.decorator import tool
+from ...types.media import DocumentFormat, ImageFormat
 from ...types.tools import ToolContext, ToolResult
 
 if TYPE_CHECKING:
@@ -701,7 +702,7 @@ async def _handle_view(
         if len(raw) > max_media_size:
             raise ValueError(f"File size ({len(raw)} bytes) exceeds maximum allowed size ({max_media_size} bytes)")
         if is_image:
-            image_format = "jpeg" if extension == "jpg" else extension
+            image_format = cast(ImageFormat, "jpeg" if extension == "jpg" else extension)
             return ToolResult(
                 toolUseId=tool_use_id,
                 status="success",
@@ -713,7 +714,7 @@ async def _handle_view(
             content=[
                 {
                     "document": {
-                        "format": extension,
+                        "format": cast(DocumentFormat, extension),
                         "name": _document_name(file_path),
                         "source": {"bytes": raw},
                     }
