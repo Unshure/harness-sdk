@@ -723,10 +723,21 @@ class TestViewMedia:
         assert block["image"]["format"] == expected_format
         assert block["image"]["source"]["bytes"] == payload
 
+    @pytest.mark.asyncio
+    async def test_pdf_returns_document_content_block_by_default(self, editor, ctx, tmp_path):
+        file_path = tmp_path / "report.pdf"
+        payload = b"%PDF-1.4\n%\xd0\xd4\xc5\xd8\n" + b"\x00" * 32
+        file_path.write_bytes(payload)
+        result = await editor(command="view", path=str(file_path), tool_context=ctx)
+        assert result["status"] == "success"
+        (block,) = result["content"]
+        assert block["document"]["format"] == "pdf"
+        assert block["document"]["name"] == "report pdf"
+        assert block["document"]["source"]["bytes"] == payload
+
     @pytest.mark.parametrize(
         ("filename", "expected_format", "expected_name"),
         [
-            ("report.pdf", "pdf", "report pdf"),
             ("report.doc", "doc", "report doc"),
             ("report.docx", "docx", "report docx"),
             ("report.xls", "xls", "report xls"),
@@ -734,18 +745,34 @@ class TestViewMedia:
         ],
     )
     @pytest.mark.asyncio
-    async def test_binary_document_returns_document_content_block(
-        self, editor, ctx, tmp_path, filename, expected_format, expected_name
+    async def test_office_formats_opt_in_route_as_document(
+        self, ctx, tmp_path, filename, expected_format, expected_name
     ):
+        # Office formats are off by default because Anthropic raises an
+        # unrecoverable TypeError when they re-enter conversation history.
+        # Opt in via ``binary_document_formats``.
         file_path = tmp_path / filename
-        payload = b"%PDF-1.4\n%\xd0\xd4\xc5\xd8\n" + b"\x00" * 32
+        payload = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32
         file_path.write_bytes(payload)
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(),
+            binary_document_formats=("pdf", "doc", "docx", "xls", "xlsx"),
+        )
         result = await editor(command="view", path=str(file_path), tool_context=ctx)
         assert result["status"] == "success"
         (block,) = result["content"]
         assert block["document"]["format"] == expected_format
         assert block["document"]["name"] == expected_name
         assert block["document"]["source"]["bytes"] == payload
+
+    @pytest.mark.asyncio
+    async def test_office_formats_rejected_by_default_as_binary(self, editor, ctx, tmp_path):
+        # With the default ``("pdf",)``, a .docx falls to the text path and is
+        # rejected as binary — not routed as a DocumentBlock.
+        file_path = tmp_path / "report.docx"
+        file_path.write_bytes(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32)
+        with pytest.raises(ValueError, match="binary file"):
+            await editor(command="view", path=str(file_path), tool_context=ctx)
 
     @pytest.mark.parametrize("filename", ["notes.csv", "notes.html", "notes.txt", "notes.md"])
     @pytest.mark.asyncio

@@ -37,14 +37,21 @@ _MAX_DOCUMENT_NAME_LENGTH = 200
 # Supported media extensions. Detection is by extension because the sandbox
 # seam exposes no MIME metadata.
 _IMAGE_FORMATS = ("png", "jpg", "jpeg", "gif", "webp")
-_BINARY_DOCUMENT_FORMATS = ("pdf", "doc", "docx", "xls", "xlsx")
+# Default set of binary-document extensions routed as DocumentBlock. Only PDF
+# by default: Anthropic's Files API accepts PDF and plain text documents but
+# raises TypeError('unsupported format') on office formats when the SDK
+# serializes conversation history, and because the bad block is already in
+# history the agent loop cannot recover. Opt into the full office set with
+# ``binary_document_formats`` on a provider that supports them (e.g. Bedrock).
+_DEFAULT_BINARY_DOCUMENT_FORMATS = ("pdf",)
 
 
-def _default_description(*, media: bool) -> str:
+def _default_description(*, media: bool, document_formats: tuple[str, ...]) -> str:
+    docs = "/".join(document_formats)
     view_clause = (
-        "png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents returned as media blocks"
+        f"png/jpeg/gif/webp images and {docs} documents returned as media blocks"
         if media
-        else "png/jpeg/gif/webp images and pdf/doc/docx/xls/xlsx documents described in text "
+        else f"png/jpeg/gif/webp images and {docs} documents described in text "
         "(this agent cannot render media)"
     )
     return (
@@ -55,7 +62,9 @@ def _default_description(*, media: bool) -> str:
     )
 
 
-DEFAULT_FILE_EDITOR_DESCRIPTION = _default_description(media=True)
+DEFAULT_FILE_EDITOR_DESCRIPTION = _default_description(
+    media=True, document_formats=_DEFAULT_BINARY_DOCUMENT_FORMATS
+)
 
 DEFAULT_UNDO_STATE_KEY = "file_editor.undo_history"
 
@@ -109,6 +118,7 @@ def make_file_editor(
     max_undo_bytes: int = _DEFAULT_MAX_UNDO_BYTES,
     undo_state_key: str = DEFAULT_UNDO_STATE_KEY,
     media: bool = True,
+    binary_document_formats: tuple[str, ...] = _DEFAULT_BINARY_DOCUMENT_FORMATS,
 ) -> DecoratedFunctionTool:
     """Create a sandbox-routed file editor tool.
 
@@ -153,6 +163,12 @@ def make_file_editor(
         media: Return images and binary documents as viewable media. Set
             ``False`` for a model that rejects media blocks, and ``view``
             describes those files in text instead.
+        binary_document_formats: Extensions routed as binary DocumentBlocks.
+            Defaults to ``("pdf",)``. Opt into the full office set
+            ``("pdf", "doc", "docx", "xls", "xlsx")`` on a provider that
+            supports them; Anthropic raises a non-recoverable
+            ``TypeError("unsupported format")`` when office-format blocks
+            re-enter conversation history.
 
     Returns:
         A decorated tool that performs file operations through the sandbox.
@@ -165,7 +181,7 @@ def make_file_editor(
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
 
     if description == DEFAULT_FILE_EDITOR_DESCRIPTION:
-        description = _default_description(media=media)
+        description = _default_description(media=media, document_formats=binary_document_formats)
         if normalized_root is not None:
             description = f"{description} All paths must be absolute and inside {normalized_root}."
 
@@ -221,6 +237,7 @@ def make_file_editor(
                 max_media_file_size,
                 tool_context.tool_use["toolUseId"],
                 media,
+                binary_document_formats,
             )
         if command == "find_line":
             return await _handle_find_line(active, resolved, search_text, fuzzy, max_file_size)
@@ -662,6 +679,7 @@ async def _handle_view(
     max_media_size: int,
     tool_use_id: str,
     media: bool,
+    binary_document_formats: tuple[str, ...],
 ) -> str | ToolResult:
     """Handle ``view``: numbered text, directory listing, or a media ToolResult for images/binary documents."""
     exists, is_dir = await _probe_sandbox_path(sandbox, file_path)
@@ -676,7 +694,7 @@ async def _handle_view(
     extension = posixpath.splitext(file_path)[1].lstrip(".").lower()
 
     is_image = extension in _IMAGE_FORMATS
-    if is_image or extension in _BINARY_DOCUMENT_FORMATS:
+    if is_image or extension in binary_document_formats:
         if view_range:
             raise ValueError("The `view_range` parameter is not allowed for image or binary document files.")
         raw = await sandbox.read_file(file_path)
@@ -767,7 +785,7 @@ async def _handle_str_replace(
     Text-representable formats (``csv``, ``html``, ``txt``, ``md``) stay on
     this path by design: they are listed as documents by Bedrock's taxonomy
     but ``str_replace`` and ``find_line`` only work against the numbered
-    lines, so ``_BINARY_DOCUMENT_FORMATS`` deliberately excludes them.
+    lines, so ``binary_document_formats`` deliberately excludes them.
 
     Returns ``(message, pre_edit_content)`` so the caller can snapshot the
     original content into the undo history after this coroutine's final await.
