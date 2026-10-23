@@ -1,5 +1,10 @@
 """Sandbox-routed file editor tool.
 
+.. deprecated::
+    This tool is deprecated in favor of the focused ``read``, ``write``, and
+    ``edit`` vended tools (see :mod:`strands.vended_tools.edit`). It will be
+    removed in a future release.
+
 Provides ``view`` (with line ranges), ``create``, ``str_replace``, ``insert``,
 ``find_line``, and ``undo_edit`` operations, all routed through a
 :class:`~strands.sandbox.base.Sandbox`: either one bound at creation (as the
@@ -11,6 +16,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -47,8 +53,7 @@ def _default_description(*, media: bool, document_formats: tuple[str, ...]) -> s
     view_clause = (
         f"png/jpeg/gif/webp images and {docs} documents returned as media blocks"
         if media
-        else f"png/jpeg/gif/webp images and {docs} documents described in text "
-        "(this agent cannot render media)"
+        else f"png/jpeg/gif/webp images and {docs} documents described in text (this agent cannot render media)"
     )
     return (
         f"Filesystem editor for viewing, creating, and editing files. Any file type: view "
@@ -56,6 +61,7 @@ def _default_description(*, media: bool, document_formats: tuple[str, ...]) -> s
         f"(exact match; ambiguous matches must opt in via replace_all), insert, find_line, "
         f"and undo_edit. Files must use absolute paths."
     )
+
 
 DEFAULT_UNDO_STATE_KEY = "file_editor.undo_history"
 
@@ -169,6 +175,13 @@ def make_file_editor(
     Raises:
         ValueError: If ``root`` is set but not an absolute path.
     """
+    warnings.warn(
+        "file_editor is deprecated and will be removed in a future release. "
+        "Use the focused read, write, and edit vended tools instead "
+        "(strands.vended_tools.edit, and the forthcoming read/write tools).",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if root is not None and not posixpath.isabs(root):
         raise ValueError(f"root must be an absolute path, got: {root}")
     normalized_root: str | None = None if root is None else posixpath.normpath(root).rstrip("/") or "/"
@@ -417,9 +430,10 @@ def _build_str_replace_result(
         # flood the model with a huge error.
         line_numbers: list[int] = []
         search_from = 0
-        while len(line_numbers) < _MAX_REPORTED_MATCH_LINES and (
-            match_index := original_content.find(old_str, search_from)
-        ) != -1:
+        while (
+            len(line_numbers) < _MAX_REPORTED_MATCH_LINES
+            and (match_index := original_content.find(old_str, search_from)) != -1
+        ):
             line_numbers.append(original_content.count("\n", 0, match_index) + 1)
             search_from = match_index + len(old_str)
         shown = f"{line_numbers}{'...' if occurrences > _MAX_REPORTED_MATCH_LINES else ''}"
@@ -563,9 +577,7 @@ def _commit_undo_update(
     if max_entries <= 0:
         return
     raw_history = state.get(state_key) or {}
-    undo_history: dict[str, _UndoEntry] = {
-        path: _UndoEntry.from_state(entry) for path, entry in raw_history.items()
-    }
+    undo_history: dict[str, _UndoEntry] = {path: _UndoEntry.from_state(entry) for path, entry in raw_history.items()}
 
     if snapshot is None:
         if undo_history.pop(file_path, None) is None:
@@ -909,5 +921,3 @@ async def _handle_find_line(
         f"Found `{search_text}` at line(s) {line_numbers}{truncated_note} of {file_path}.\n"
         f"{_make_output(snippet, f'a snippet around line {first + 1} of {file_path}', start + 1)}"
     )
-
-
