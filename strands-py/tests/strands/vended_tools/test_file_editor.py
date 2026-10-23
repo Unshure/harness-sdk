@@ -812,7 +812,9 @@ class TestViewMedia:
         # provider-API constraint, so it should not reject the view.
         file_path = tmp_path / "big.png"
         file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096)
-        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), media=False, max_media_file_size=256)
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(), media=False, max_media_file_size=256
+        )
         result = await editor(command="view", path=str(file_path), tool_context=ctx)
         assert isinstance(result, str)
         assert "Image file" in result
@@ -822,7 +824,9 @@ class TestViewMedia:
         file_path = tmp_path / "report.docx"
         payload = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 32
         file_path.write_bytes(payload)
-        editor = make_file_editor(sandbox=NotASandboxLocalEnvironment(), binary_document_formats=("PDF", "DOCX"))
+        editor = make_file_editor(
+            sandbox=NotASandboxLocalEnvironment(), binary_document_formats=("PDF", "DOCX")
+        )
         result = await editor(command="view", path=str(file_path), tool_context=ctx)
         assert result["status"] == "success"
         assert result["content"][0]["document"]["format"] == "docx"
@@ -934,7 +938,9 @@ class TestFindLine:
         # Fuzzy is whitespace-tolerant only: tokens separated by non-whitespace
         # content (``foo = baz; bar``) must not match ``foo bar``.
         file_path = _write(tmp_path / "test.txt", "foo = baz; bar\n")
-        result = await editor(command="find_line", path=file_path, tool_context=ctx, search_text="foo bar", fuzzy=True)
+        result = await editor(
+            command="find_line", path=file_path, tool_context=ctx, search_text="foo bar", fuzzy=True
+        )
         assert "No matches" in result
 
     @pytest.mark.asyncio
@@ -965,7 +971,6 @@ class TestFindLine:
         fuzzy = await editor(command="find_line", path=file_path, tool_context=ctx, search_text="", fuzzy=True)
         assert "No matches" in plain
         assert "No matches" in fuzzy
-
 
 class TestUndo:
     """In-memory, per-agent ``undo_edit``."""
@@ -1076,8 +1081,12 @@ class TestUndo:
         editor_two = make_file_editor(sandbox=sandbox)
 
         await asyncio.gather(
-            editor_one(command="str_replace", path=file_a, tool_context=ctx, old_str="A-original", new_str="A-changed"),
-            editor_two(command="str_replace", path=file_b, tool_context=ctx, old_str="B-original", new_str="B-changed"),
+            editor_one(
+                command="str_replace", path=file_a, tool_context=ctx, old_str="A-original", new_str="A-changed"
+            ),
+            editor_two(
+                command="str_replace", path=file_b, tool_context=ctx, old_str="B-original", new_str="B-changed"
+            ),
         )
 
         # Both snapshots survived — either editor can undo the other's edit.
