@@ -10,13 +10,12 @@ time. Text files return ``cat -n`` style numbered lines so the model can cite
 
 from __future__ import annotations
 
-import ntpath
-import posixpath
 import re
 from typing import TYPE_CHECKING
 
 from ...tools.decorator import tool
 from ...types.tools import ToolContext, ToolResult
+from .._paths import validate_absolute_path
 
 if TYPE_CHECKING:
     from ...sandbox.base import Sandbox
@@ -90,7 +89,7 @@ def make_read(
             offset: 1-indexed line to start from. Defaults to the first line. Text files only.
             limit: Maximum number of lines to return. Defaults to 2000. Text files only.
         """
-        _validate_path(path)
+        validate_absolute_path(path)
         active = sandbox if sandbox is not None else tool_context.agent.sandbox
         extension = _extension(path)
 
@@ -142,25 +141,6 @@ def make_read(
 
 read = make_read()
 """Default sandbox-routed ``read`` tool. Reads the sandbox from the agent's context at call time."""
-
-
-def _validate_path(path: str) -> None:
-    r"""Validate that a path is absolute and contains no directory traversal.
-
-    The path belongs to the sandbox, not the host, so accept either platform's
-    notion of absolute. The two libraries disagree only on
-    backslash-rooted-without-drive (``\foo``: Node yes, Python 3.13 no); that
-    divergence is intentional and stdlib-driven.
-
-    Raises:
-        ValueError: If the path is not absolute or contains a ``..`` segment.
-    """
-    if not (posixpath.isabs(path) or ntpath.isabs(path)):
-        raise ValueError(
-            f"The path {path} is not absolute; it should start with '/' (or a drive letter or UNC share on Windows)."
-        )
-    if ".." in re.split(r"[/\\]", path):
-        raise ValueError("Invalid path: path traversal is not allowed.")
 
 
 def _number_lines(content: str, start: int) -> str:
