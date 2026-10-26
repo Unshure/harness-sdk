@@ -1,17 +1,22 @@
 """Built-in tools for commands, files, HTTP, taking notes, pausing, and multi-agent delegation.
 
-The :func:`make_shell` and :func:`make_edit` factories produce sandbox-routed
-tools that either bind to a :class:`~strands.sandbox.base.Sandbox` at creation
-(as the built-in Docker/SSH sandboxes do when vending tools) or read the sandbox
-from the agent at call time. Each :data:`shell` call runs in a fresh shell, so
-state does not persist between calls. The :data:`sleep` tool pauses execution
-for a bounded, cancellable duration.
+The :func:`make_shell`, :func:`make_edit`, and :func:`make_write` factories
+produce sandbox-routed tools that either bind to a
+:class:`~strands.sandbox.base.Sandbox` at creation (as the built-in Docker/SSH
+sandboxes do when vending tools) or read the sandbox from the agent at call
+time. Each :data:`shell` call runs in a fresh shell, so state does not persist
+between calls. The :data:`sleep` tool pauses execution for a bounded,
+cancellable duration.
 
 The :data:`edit` tool replaces an exact, unique string in a text file; it
 pairs with the ``read`` and ``write`` tools. The older :data:`file_editor`
 tool is retained for compatibility but is deprecated; Docker/SSH sandboxes
 still vend it alongside ``read``/``write`` for continuity. Calling
 :func:`make_file_editor` emits a :class:`DeprecationWarning`.
+
+The :data:`write` tool creates or overwrites a text file with the full provided
+content; pair with the companion ``read`` and ``edit`` vended tools for the
+focused file-editing surface.
 
 The :data:`http_request` tool makes raw HTTP calls; use
 :func:`make_http_request` to supply a pre-configured ``httpx.AsyncClient``
@@ -86,6 +91,7 @@ from .sleep import make_sleep, sleep
 from .stop import make_stop, stop
 from .subagent import make_subagent, subagent
 from .swarm import make_swarm, swarm
+from .write import make_write, write
 
 
 def __getattr__(name: str) -> Any:
@@ -137,6 +143,7 @@ __all__ = [
     "make_stop",
     "make_subagent",
     "make_swarm",
+    "make_write",
     "notebook",
     "python_repl",
     "shell",
@@ -144,4 +151,5 @@ __all__ = [
     "stop",
     "subagent",
     "swarm",
+    "write",
 ]

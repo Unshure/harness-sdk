@@ -7,6 +7,7 @@ tags: [tool-authoring]
 sourceLinks:
   - path: strands-ts/src/vended-tools/file-editor/file-editor.ts
   - path: strands-py/src/strands/vended_tools/edit/edit.py
+  - path: strands-py/src/strands/vended_tools/write/write.py
   - path: strands-ts/src/vended-tools/handoff-to-user/handoff-to-user.ts
   - path: strands-ts/src/vended-tools/bash/bash.ts
   - path: strands-ts/src/vended-tools/http-request/http-request.ts
@@ -54,6 +55,7 @@ Each tool is imported from its own subpath under `@strands-agents/sdk/vended-too
 |------|-------------|--------------|
 | [Edit](#edit) | Make in-place changes to a text file | Python |
 | [File Editor](#file-editor) *(deprecated)* | View, create, and edit files | Python, TypeScript (Node.js) |
+| [Write](#write) | Create or overwrite a text file with the full provided content | Python |
 | [HTTP Request](#http-request) | Make HTTP requests to external APIs | Python, TypeScript (Node.js 22+, browsers) |
 | [Notebook](#notebook) | Manage persistent text notebooks | Python, TypeScript (Node.js, browsers) |
 | [Bash](#bash) | Execute shell commands with persistent sessions | Python, TypeScript (Node.js, Unix/Linux/macOS) |
@@ -134,6 +136,34 @@ agent("Create a file at /tmp/hello.txt with the contents 'Hello, world!'")
 </Tabs>
 
 [Full API reference](https://github.com/strands-agents/harness-sdk/blob/main/strands-ts/src/vended-tools/file-editor/README.md)
+
+---
+
+### Write
+
+Lays down the full content of a text file in one shot — creating it or overwriting whatever is there.
+
+The confirmation returned to the model is of the form `Wrote <N> lines to <path>.`, where `N` is the number of `\n`-separated entries in the content (so content ending with a newline reports one more entry than text lines, and empty content reports zero). Available in Python today; TypeScript ships in a follow-up.
+
+:::caution[Security Warning]
+This tool writes files at arbitrary absolute paths with the full permissions of the process. Only use with trusted input and consider running in a [sandboxed environment](../sandbox/index.mdx) for production.
+:::
+
+**Example:**
+
+<Tabs>
+<Tab label="Python">
+
+```python
+from strands import Agent
+from strands.vended_tools import write
+
+agent = Agent(tools=[write])
+agent("Create a file at /tmp/hello.txt with the contents 'Hello, Strands!'.")
+```
+
+</Tab>
+</Tabs>
 
 ---
 
