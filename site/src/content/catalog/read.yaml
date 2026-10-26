@@ -1,9 +1,0 @@
-name: Read
-description: Read a file through the agent's sandbox, returning numbered text or media blocks.
-integrationType: tool
-maintainedBy: strands
-languages:
-  python: {}
-github: https://github.com/strands-agents/harness-sdk/tree/main/strands-py/src/strands/vended_tools/read
-docsPage: docs/user-guide/sdk/tools/vended-tools
-addedDate: 2026-10-26
