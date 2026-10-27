@@ -4,6 +4,8 @@ Thin, self-contained tools that fill gaps in the SDK's vended set. Each is a can
 into the core SDK later; keep them minimal and SDK-idiomatic.
 """
 
+from strands.vended_tools import edit
+
 from strands_harness.tools.file_tools import make_read, read, write
 from strands_harness.tools.programmatic_tool_caller import (
     DEFAULT_PROGRAMMATIC_TOOL_CALLER_DESCRIPTION,
@@ -32,6 +34,7 @@ __all__ = [
     "Open",
     "Option",
     "Preset",
+    "edit",
     "make_programmatic_tool_caller",
     "make_read",
     "make_subagent",

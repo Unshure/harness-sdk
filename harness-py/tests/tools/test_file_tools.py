@@ -1,7 +1,7 @@
 import pytest
 
 from strands_harness import create_harness
-from strands_harness.tools import make_read, read, write
+from strands_harness.tools import edit, make_read, read, write
 
 
 class _Ctx:
@@ -31,6 +31,28 @@ async def test_read_offset_and_limit(ctx, tmp_path):
     assert "     4\tline4" in out
     assert "line5" not in out
     assert "Showing lines 3-4 of 10" in out
+
+
+async def test_edit_replaces_unique_occurrence(ctx, tmp_path):
+    path = str(tmp_path / "f.txt")
+    await write._tool_func(path=path, content="one\ntwo\nthree\n", tool_context=ctx)
+    await edit._tool_func(path=path, old_str="two", new_str="TWO", tool_context=ctx)
+    out = await read._tool_func(path=path, tool_context=ctx)
+    assert "     2\tTWO" in out
+
+
+async def test_edit_requires_verbatim_match(ctx, tmp_path):
+    path = str(tmp_path / "f.txt")
+    await write._tool_func(path=path, content="hello\n", tool_context=ctx)
+    with pytest.raises(ValueError, match="did not appear verbatim"):
+        await edit._tool_func(path=path, old_str="missing", new_str="x", tool_context=ctx)
+
+
+async def test_edit_requires_unique_match(ctx, tmp_path):
+    path = str(tmp_path / "f.txt")
+    await write._tool_func(path=path, content="dup\ndup\n", tool_context=ctx)
+    with pytest.raises(ValueError, match="appears 2 times"):
+        await edit._tool_func(path=path, old_str="dup", new_str="x", tool_context=ctx)
 
 
 async def test_relative_path_rejected(ctx):
