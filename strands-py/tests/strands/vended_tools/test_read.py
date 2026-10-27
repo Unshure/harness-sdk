@@ -187,7 +187,8 @@ class TestMediaOff:
         out = await reader_text_only(path=str(file_path), tool_context=ctx)
         assert out == (
             f"[Image file: {file_path} (png, 12 bytes). This model cannot view image files, so its "
-            f"contents are not shown. Use shell tools if the file has a text-extractable form.]"
+            f"contents are not shown. If a shell tool is available, use it when the file has a "
+            f"text-extractable form.]"
         )
 
     @pytest.mark.asyncio
@@ -197,7 +198,8 @@ class TestMediaOff:
         out = await reader_text_only(path=str(file_path), tool_context=ctx)
         assert out == (
             f"[Document file: {file_path} (pdf, 13 bytes). This model cannot view document files, so "
-            f"its contents are not shown. Use shell tools if the file has a text-extractable form.]"
+            f"its contents are not shown. If a shell tool is available, use it when the file has a "
+            f"text-extractable form.]"
         )
 
     @pytest.mark.asyncio
@@ -229,13 +231,11 @@ class TestSizeCap:
             await reader(path=str(file_path), tool_context=ctx)
 
     @pytest.mark.asyncio
-    async def test_rejects_oversize_image(self, reader, reader_text_only, ctx, tmp_path):
+    async def test_rejects_oversize_image(self, reader, ctx, tmp_path):
         file_path = tmp_path / "huge.png"
         file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * (10_485_760 + 1))
         with pytest.raises(ValueError, match=r"exceeding the 10485760-byte limit for image reads"):
             await reader(path=str(file_path), tool_context=ctx)
-        with pytest.raises(ValueError, match=r"exceeding the 10485760-byte limit for image reads"):
-            await reader_text_only(path=str(file_path), tool_context=ctx)
 
     @pytest.mark.asyncio
     async def test_rejects_oversize_document(self, reader, ctx, tmp_path):
@@ -243,6 +243,41 @@ class TestSizeCap:
         file_path.write_bytes(b"%PDF-" + b"x" * (10_485_760 + 1))
         with pytest.raises(ValueError, match=r"exceeding the 10485760-byte limit for document reads"):
             await reader(path=str(file_path), tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_oversize_image_returns_placeholder_when_media_off(self, reader_text_only, ctx, tmp_path):
+        file_path = tmp_path / "huge.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * (10_485_760 + 1))
+        out = await reader_text_only(path=str(file_path), tool_context=ctx)
+        assert isinstance(out, str)
+        assert out.startswith("[Image file:")
+
+    @pytest.mark.asyncio
+    async def test_oversize_document_returns_placeholder_when_media_off(self, reader_text_only, ctx, tmp_path):
+        file_path = tmp_path / "huge.pdf"
+        file_path.write_bytes(b"%PDF-" + b"x" * (10_485_760 + 1))
+        out = await reader_text_only(path=str(file_path), tool_context=ctx)
+        assert isinstance(out, str)
+        assert out.startswith("[Document file:")
+
+    @pytest.mark.asyncio
+    async def test_max_bytes_is_configurable(self, ctx, tmp_path):
+        file_path = tmp_path / "f.txt"
+        file_path.write_text("x" * 2000)  # one line, 2000 bytes
+        reader_small = make_read(sandbox=NotASandboxLocalEnvironment(), max_bytes=1000)
+        with pytest.raises(ValueError, match=r"exceeding the 1000-byte limit"):
+            await reader_small(path=str(file_path), tool_context=ctx)
+        reader_big = make_read(sandbox=NotASandboxLocalEnvironment(), max_bytes=4096)
+        out = await reader_big(path=str(file_path), tool_context=ctx)
+        assert out.startswith("     1\t")
+
+    @pytest.mark.asyncio
+    async def test_max_media_bytes_is_configurable(self, ctx, tmp_path):
+        file_path = tmp_path / "pic.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 1000)
+        reader_small = make_read(sandbox=NotASandboxLocalEnvironment(), max_media_bytes=500)
+        with pytest.raises(ValueError, match=r"exceeding the 500-byte limit for image reads"):
+            await reader_small(path=str(file_path), tool_context=ctx)
 
 
 class TestNonUtf8:

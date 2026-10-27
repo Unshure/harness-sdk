@@ -11,9 +11,10 @@ and binary documents (pdf/doc/docx/xls/xlsx) return as media content blocks when
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ...tools.decorator import tool
+from ...types.media import DocumentFormat, ImageFormat
 from ...types.tools import ToolContext, ToolResult
 from .._paths import validate_absolute_path
 
@@ -34,7 +35,7 @@ _DOCUMENT_FORMATS = ("pdf", "doc", "docx", "xls", "xlsx")
 
 # For images the extension only selects the media path; the signature decides the format. A non-image or
 # mislabeled file sent as a success image block poisons history (every later request fails on it).
-_IMAGE_SIGNATURES = (
+_IMAGE_SIGNATURES: tuple[tuple[bytes, ImageFormat], ...] = (
     (b"\x89PNG\r\n\x1a\n", "png"),
     (b"\xff\xd8\xff", "jpeg"),
     (b"GIF87a", "gif"),
@@ -69,6 +70,8 @@ def make_read(
     sandbox: Sandbox | None = None,
     name: str = "read",
     description: str | None = None,
+    max_bytes: int = _READ_MAX_BYTES,
+    max_media_bytes: int = _READ_MAX_MEDIA_BYTES,
 ) -> DecoratedFunctionTool:
     """Create a sandbox-routed ``read`` tool.
 
@@ -83,6 +86,13 @@ def make_read(
             configured sandbox is used at call time.
         name: Tool name. Defaults to ``"read"``.
         description: Tool description shown to the model.
+        max_bytes: Maximum size of the returned text window. A 1MB default
+            keeps a 1-line minified JSON file from exhausting the model's
+            context; raise it when the agent needs to read bigger single-line
+            payloads.
+        max_media_bytes: Maximum byte size for image and document reads.
+            Defaults to 10MB, above Anthropic's 5MB image and Bedrock's 4.5MB
+            document limits.
 
     Returns:
         A decorated tool that reads files through the sandbox.
@@ -122,41 +132,49 @@ def make_read(
             if image_format is None:
                 raise ValueError(
                     f"{path} has a .{extension} extension but its {len(data)} bytes are not a png, jpeg, gif, "
-                    f"or webp image. Identify it with `file`; if it is text, read it with `cat`."
+                    f"or webp image. If a shell tool is available, use it to identify or extract text."
                 )
-            _assert_media_within_size_limit(path, "image", len(data))
             if not media:
                 return _media_placeholder(path, "Image", image_format, len(data))
-            return {
+            _assert_media_within_size_limit(path, "image", len(data), max_media_bytes)
+            image_result: ToolResult = {
                 "toolUseId": tool_context.tool_use["toolUseId"],
                 "status": "success",
                 "content": [{"image": {"format": image_format, "source": {"bytes": data}}}],
             }
+            return image_result
 
         if extension in _DOCUMENT_FORMATS:
             data = await active.read_file(path)
-            if not _matches_document_signature(data, extension):
+            if not any(data.startswith(signature) for signature in _DOCUMENT_SIGNATURES[extension]):
                 raise ValueError(
                     f"{path} has a .{extension} extension but its {len(data)} bytes are not a valid "
-                    f"{extension} document. Identify it with `file`; if it is text, read it with `cat`."
+                    f"{extension} document. If a shell tool is available, use it to identify or extract text."
                 )
-            _assert_media_within_size_limit(path, "document", len(data))
             if not media:
                 return _media_placeholder(path, "Document", extension, len(data))
-            return {
+            _assert_media_within_size_limit(path, "document", len(data), max_media_bytes)
+            document_result: ToolResult = {
                 "toolUseId": tool_context.tool_use["toolUseId"],
                 "status": "success",
                 "content": [
-                    {"document": {"format": extension, "name": _document_name(path), "source": {"bytes": data}}}
+                    {
+                        "document": {
+                            "format": cast(DocumentFormat, extension),
+                            "name": _document_name(path),
+                            "source": {"bytes": data},
+                        }
+                    }
                 ],
             }
+            return document_result
 
         try:
             content = await active.read_text(path)
         except UnicodeDecodeError as error:
             raise ValueError(
-                f"{path} is not UTF-8 text (decode failed at byte {error.start}). If it is a binary "
-                f"file, inspect it with shell tools."
+                f"{path} is not UTF-8 text (decode failed at byte {error.start}). If a shell tool is "
+                f"available, inspect it there."
             ) from error
 
         lines = content.split("\n")
@@ -168,13 +186,13 @@ def make_read(
 
         window_text = "\n".join(window)
         window_bytes = len(window_text.encode("utf-8"))
-        if window_bytes > _READ_MAX_BYTES:
+        if window_bytes > max_bytes:
             raise ValueError(
                 f"Read window from {path} is {window_bytes} bytes ({len(window)} lines), exceeding the "
-                f"{_READ_MAX_BYTES}-byte limit. Reduce `limit` or shift `offset` to read a smaller slice."
+                f"{max_bytes}-byte limit. Reduce `limit` or shift `offset` to read a smaller slice."
             )
 
-        numbered = _number_lines(window_text, start + 1)
+        numbered = "\n".join(f"{index + start + 1:>6}\t{line}" for index, line in enumerate(window))
         if start > 0 or start + count < len(lines):
             shown_end = start + len(window)
             numbered += f"\n[Showing lines {start + 1}-{shown_end} of {len(lines)}. Use offset/limit to read more.]"
@@ -185,10 +203,6 @@ def make_read(
 
 read = make_read()
 """Default sandbox-routed ``read`` tool. Reads the sandbox from the agent's context at call time."""
-
-
-def _number_lines(content: str, start: int) -> str:
-    return "\n".join(f"{index + start:>6}\t{line}" for index, line in enumerate(content.split("\n")))
 
 
 def _extension(path: str) -> str:
@@ -208,27 +222,23 @@ def _document_name(path: str) -> str:
     return name or "document"
 
 
-def _sniff_image_format(data: bytes) -> str | None:
+def _sniff_image_format(data: bytes) -> ImageFormat | None:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
     return next((fmt for signature, fmt in _IMAGE_SIGNATURES if data.startswith(signature)), None)
 
 
-def _matches_document_signature(data: bytes, extension: str) -> bool:
-    return any(data.startswith(signature) for signature in _DOCUMENT_SIGNATURES[extension])
-
-
-def _assert_media_within_size_limit(path: str, kind: str, size: int) -> None:
-    if size > _READ_MAX_MEDIA_BYTES:
+def _assert_media_within_size_limit(path: str, kind: str, size: int, max_bytes: int) -> None:
+    if size > max_bytes:
         raise ValueError(
-            f"{path} is {size} bytes, exceeding the {_READ_MAX_MEDIA_BYTES}-byte limit for {kind} reads. "
-            f"Use shell tools to extract a smaller representation."
+            f"{path} is {size} bytes, exceeding the {max_bytes}-byte limit for {kind} reads. "
+            f"If a shell tool is available, use it to extract a smaller representation."
         )
 
 
 def _media_placeholder(path: str, kind: str, media_format: str, size: int) -> str:
     return (
         f"[{kind} file: {path} ({media_format}, {size} bytes). This model cannot view "
-        f"{kind.lower()} files, so its contents are not shown. Use shell tools if the file has a "
-        f"text-extractable form.]"
+        f"{kind.lower()} files, so its contents are not shown. If a shell tool is available, use it "
+        f"when the file has a text-extractable form.]"
     )
