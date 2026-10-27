@@ -156,7 +156,7 @@ class TestReadDocument:
         file_path = tmp_path / "data.csv"
         file_path.write_text("a,b\n1,2\n")
         out = await reader(path=str(file_path), tool_context=ctx)
-        assert "     1\ta,b" in out
+        assert out == "     1\ta,b\n     2\t1,2\n     3\t"
 
     @pytest.mark.parametrize(
         ("name", "data"),
@@ -185,26 +185,27 @@ class TestMediaOff:
         file_path = tmp_path / "shot.png"
         file_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         out = await reader_text_only(path=str(file_path), tool_context=ctx)
-        assert isinstance(out, str)
-        assert str(file_path) in out
-        assert "png" in out
-        assert "12 bytes" in out
+        assert out == (
+            f"[Image file: {file_path} (png, 12 bytes). This model cannot view image files, so its "
+            f"contents are not shown. Use shell tools if the file has a text-extractable form.]"
+        )
 
     @pytest.mark.asyncio
     async def test_describes_a_document_as_text(self, reader_text_only, ctx, tmp_path):
         file_path = tmp_path / "spec.pdf"
         file_path.write_bytes(b"%PDF-1.7 fake")
         out = await reader_text_only(path=str(file_path), tool_context=ctx)
-        assert isinstance(out, str)
-        assert "pdf" in out
-        assert "cannot view" in out
+        assert out == (
+            f"[Document file: {file_path} (pdf, 13 bytes). This model cannot view document files, so "
+            f"its contents are not shown. Use shell tools if the file has a text-extractable form.]"
+        )
 
     @pytest.mark.asyncio
     async def test_leaves_text_reads_untouched(self, reader_text_only, ctx, tmp_path):
         file_path = tmp_path / "f.txt"
         file_path.write_text("alpha\nbeta\n")
         out = await reader_text_only(path=str(file_path), tool_context=ctx)
-        assert "     1\talpha" in out
+        assert out == "     1\talpha\n     2\tbeta\n     3\t"
 
 
 class TestPathValidation:
