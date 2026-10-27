@@ -159,6 +159,26 @@ class TestReadDocument:
         out = await reader(path=str(file_path), tool_context=ctx)
         assert "     1\ta,b" in out
 
+    @pytest.mark.parametrize(
+        ("name", "data"),
+        [
+            ("notes.pdf", b"this is plain text\n"),
+            ("notes.pdf", b"PK\x03\x04fake"),  # zip bytes under a pdf extension
+            ("sheet.xlsx", b"this is plain text\n"),  # expected zip
+            ("sheet.xlsx", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1fake"),  # ole2 bytes under xlsx
+            ("legacy.doc", b"PK\x03\x04fake"),  # zip bytes under legacy ole2 extension
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_rejects_mislabeled_document_bytes(self, reader, reader_text_only, ctx, tmp_path, name, data):
+        file_path = tmp_path / name
+        file_path.write_bytes(data)
+        extension = name.rsplit(".", 1)[1]
+        with pytest.raises(ValueError, match=rf"\.{extension} extension but its {len(data)} bytes are not a valid"):
+            await reader(path=str(file_path), tool_context=ctx)
+        with pytest.raises(ValueError, match=rf"\.{extension} extension but its {len(data)} bytes are not a valid"):
+            await reader_text_only(path=str(file_path), tool_context=ctx)
+
 
 class TestMediaOff:
     @pytest.mark.asyncio

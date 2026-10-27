@@ -39,6 +39,19 @@ _IMAGE_SIGNATURES = (
     (b"GIF89a", "gif"),
 )
 
+# Documents are picked by extension but checked by magic bytes before shipping as a document block, for
+# the same history-poisoning reason as images. Legacy .doc/.xls are OLE2 compound files; .docx/.xlsx are
+# ZIP containers.
+_OLE2_SIGNATURE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_ZIP_SIGNATURE = b"PK\x03\x04"
+_DOCUMENT_SIGNATURES: dict[str, tuple[bytes, ...]] = {
+    "pdf": (b"%PDF-",),
+    "doc": (_OLE2_SIGNATURE,),
+    "xls": (_OLE2_SIGNATURE,),
+    "docx": (_ZIP_SIGNATURE,),
+    "xlsx": (_ZIP_SIGNATURE,),
+}
+
 DEFAULT_READ_DESCRIPTION = (
     "Read a file. Text returns `cat -n` style numbered lines so you can cite `path:line`; "
     "images (png/jpg/jpeg/gif/webp) and binary documents (pdf/doc/docx/xls/xlsx) return media "
@@ -115,6 +128,11 @@ def make_read(
 
         if extension in _DOCUMENT_FORMATS:
             data = await active.read_file(path)
+            if not _matches_document_signature(data, extension):
+                raise ValueError(
+                    f"{path} has a .{extension} extension but its {len(data)} bytes are not a valid "
+                    f"{extension} document. Identify it with `file`; if it is text, read it with `cat`."
+                )
             if not media:
                 return _media_placeholder(path, "Document", extension, len(data))
             return {
@@ -172,6 +190,10 @@ def _sniff_image_format(data: bytes) -> str | None:
     if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
         return "webp"
     return next((fmt for signature, fmt in _IMAGE_SIGNATURES if data.startswith(signature)), None)
+
+
+def _matches_document_signature(data: bytes, extension: str) -> bool:
+    return any(data.startswith(signature) for signature in _DOCUMENT_SIGNATURES[extension])
 
 
 def _media_placeholder(path: str, kind: str, media_format: str, size: int) -> str:
