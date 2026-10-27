@@ -1,7 +1,7 @@
-"""Filesystem tools: ``read``, ``write``, ``edit``.
+"""Filesystem tools: ``read`` and ``write``.
 
 Thin tools that route file access through the same ``tool_context.agent.sandbox`` seam the SDK's
-file editor uses, so they behave identically across host and container filesystems. They are
+``edit`` tool uses, so they behave identically across host and container filesystems. They are
 candidates to port into the core SDK later; keep them minimal and SDK-idiomatic.
 """
 
@@ -162,27 +162,3 @@ async def write(path: str, content: str, tool_context: ToolContext) -> str:
     await tool_context.agent.sandbox.write_text(path, content)
     line_count = 0 if content == "" else len(content.split("\n"))
     return f"Wrote {line_count} lines to {path}."
-
-
-@tool(name="edit", context="tool_context")
-async def edit(path: str, old_str: str, new_str: str, tool_context: ToolContext) -> str:
-    """Replace an exact string in a file. ``old_str`` must appear exactly once.
-
-    Args:
-        path: Absolute path to the file.
-        old_str: Exact text to find. Must be unique within the file.
-        new_str: Replacement text.
-        tool_context: Injected by the framework. Not user-facing.
-    """
-    _validate_path(path)
-    sandbox = tool_context.agent.sandbox
-    content = await sandbox.read_text(path)
-
-    occurrences = content.count(old_str)
-    if occurrences == 0:
-        raise ValueError(f"old_str did not appear verbatim in {path}.")
-    if occurrences > 1:
-        raise ValueError(f"old_str appears {occurrences} times in {path}; make it unique.")
-
-    await sandbox.write_text(path, content.replace(old_str, new_str, 1))
-    return f"Edited {path}."
