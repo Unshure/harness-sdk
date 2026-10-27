@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 _READ_DEFAULT_LIMIT = 2000
 _READ_MAX_BYTES = 1_048_576  # 1MB — mirrors file_editor so a few long lines cannot blow out model context
+_READ_MAX_MEDIA_BYTES = 10_485_760  # 10MB — guards memory + provider payload limits
 
 # Media formats the SDK accepts in tool results, selected by file extension because the sandbox seam
 # exposes no MIME metadata. Text-representable document formats (csv, html, txt, md) stay on the
@@ -126,6 +127,7 @@ def make_read(
                     f"{path} has a .{extension} extension but its {len(data)} bytes are not a png, jpeg, gif, "
                     f"or webp image. Identify it with `file`; if it is text, read it with `cat`."
                 )
+            _assert_media_within_size_limit(path, "image", len(data))
             if not media:
                 return _media_placeholder(path, "Image", image_format, len(data))
             return {
@@ -141,6 +143,7 @@ def make_read(
                     f"{path} has a .{extension} extension but its {len(data)} bytes are not a valid "
                     f"{extension} document. Identify it with `file`; if it is text, read it with `cat`."
                 )
+            _assert_media_within_size_limit(path, "document", len(data))
             if not media:
                 return _media_placeholder(path, "Document", extension, len(data))
             return {
@@ -216,6 +219,14 @@ def _sniff_image_format(data: bytes) -> str | None:
 
 def _matches_document_signature(data: bytes, extension: str) -> bool:
     return any(data.startswith(signature) for signature in _DOCUMENT_SIGNATURES[extension])
+
+
+def _assert_media_within_size_limit(path: str, kind: str, size: int) -> None:
+    if size > _READ_MAX_MEDIA_BYTES:
+        raise ValueError(
+            f"{path} is {size} bytes, exceeding the {_READ_MAX_MEDIA_BYTES}-byte limit for {kind} reads. "
+            f"Use shell tools to extract a smaller representation."
+        )
 
 
 def _media_placeholder(path: str, kind: str, media_format: str, size: int) -> str:

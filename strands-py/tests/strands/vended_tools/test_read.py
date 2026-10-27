@@ -227,6 +227,22 @@ class TestSizeCap:
         with pytest.raises(ValueError, match=r"exceeding the 1048576-byte limit"):
             await reader(path=str(file_path), tool_context=ctx)
 
+    @pytest.mark.asyncio
+    async def test_rejects_oversize_image(self, reader, reader_text_only, ctx, tmp_path):
+        file_path = tmp_path / "huge.png"
+        file_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * (10_485_760 + 1))
+        with pytest.raises(ValueError, match=r"exceeding the 10485760-byte limit for image reads"):
+            await reader(path=str(file_path), tool_context=ctx)
+        with pytest.raises(ValueError, match=r"exceeding the 10485760-byte limit for image reads"):
+            await reader_text_only(path=str(file_path), tool_context=ctx)
+
+    @pytest.mark.asyncio
+    async def test_rejects_oversize_document(self, reader, ctx, tmp_path):
+        file_path = tmp_path / "huge.pdf"
+        file_path.write_bytes(b"%PDF-" + b"x" * (10_485_760 + 1))
+        with pytest.raises(ValueError, match=r"exceeding the 10485760-byte limit for document reads"):
+            await reader(path=str(file_path), tool_context=ctx)
+
 
 class TestNonUtf8:
     @pytest.mark.asyncio
