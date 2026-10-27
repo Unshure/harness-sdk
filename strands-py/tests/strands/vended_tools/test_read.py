@@ -49,8 +49,7 @@ class TestReadText:
         file_path = tmp_path / "f.txt"
         file_path.write_text("alpha\nbeta\n")
         out = await reader(path=str(file_path), tool_context=ctx)
-        assert "     1\talpha" in out
-        assert "     2\tbeta" in out
+        assert out == "     1\talpha\n     2\tbeta\n     3\t"
 
     @pytest.mark.asyncio
     async def test_offset_and_limit_page_through_file(self, reader, ctx, tmp_path):
@@ -218,6 +217,39 @@ class TestPathValidation:
     async def test_path_traversal_rejected(self, reader, ctx):
         with pytest.raises(ValueError, match="path traversal"):
             await reader(path="/tmp/../etc/passwd", tool_context=ctx)
+
+
+class TestSizeCap:
+    @pytest.mark.asyncio
+    async def test_rejects_window_exceeding_max_bytes(self, reader, ctx, tmp_path):
+        file_path = tmp_path / "big.txt"
+        file_path.write_text("x" * (1_048_576 + 1))
+        with pytest.raises(ValueError, match=r"exceeding the 1048576-byte limit"):
+            await reader(path=str(file_path), tool_context=ctx)
+
+
+class TestNonUtf8:
+    @pytest.mark.asyncio
+    async def test_non_utf8_file_raises_clear_error(self, reader, ctx, tmp_path):
+        file_path = tmp_path / "data.txt"
+        file_path.write_bytes(b"valid\n\xe9\xff\xfe\n")
+        with pytest.raises(ValueError, match="not UTF-8 text"):
+            await reader(path=str(file_path), tool_context=ctx)
+
+
+class TestDescription:
+    def test_default_description_mentions_media(self):
+        reader_media = make_read()
+        assert "return media you can view directly" in reader_media.tool_spec["description"]
+
+    def test_media_off_description_mentions_placeholder(self):
+        reader_text_only = make_read(media=False)
+        assert "return a short text placeholder" in reader_text_only.tool_spec["description"]
+        assert "return media you can view directly" not in reader_text_only.tool_spec["description"]
+
+    def test_explicit_description_wins(self):
+        reader_custom = make_read(media=False, description="Custom.")
+        assert reader_custom.tool_spec["description"] == "Custom."
 
 
 class TestOffsetLimitValidation:

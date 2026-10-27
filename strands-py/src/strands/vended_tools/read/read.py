@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ...tools.decorator import DecoratedFunctionTool
 
 _READ_DEFAULT_LIMIT = 2000
+_READ_MAX_BYTES = 1_048_576  # 1MB — mirrors file_editor so a few long lines cannot blow out model context
 
 # Media formats the SDK accepts in tool results, selected by file extension because the sandbox seam
 # exposes no MIME metadata. Text-representable document formats (csv, html, txt, md) stay on the
@@ -57,6 +58,11 @@ DEFAULT_READ_DESCRIPTION = (
     "images (png/jpg/jpeg/gif/webp) and binary documents (pdf/doc/docx/xls/xlsx) return media "
     "you can view directly. Files must use absolute paths."
 )
+_DEFAULT_READ_DESCRIPTION_TEXT_ONLY = (
+    "Read a file. Text returns `cat -n` style numbered lines so you can cite `path:line`; "
+    "images and binary documents return a short text placeholder because this model does not "
+    "accept media. Files must use absolute paths."
+)
 
 
 def make_read(
@@ -64,7 +70,7 @@ def make_read(
     media: bool = True,
     sandbox: Sandbox | None = None,
     name: str = "read",
-    description: str = DEFAULT_READ_DESCRIPTION,
+    description: str | None = None,
 ) -> DecoratedFunctionTool:
     """Create a sandbox-routed ``read`` tool.
 
@@ -83,6 +89,8 @@ def make_read(
     Returns:
         A decorated tool that reads files through the sandbox.
     """
+    if description is None:
+        description = DEFAULT_READ_DESCRIPTION if media else _DEFAULT_READ_DESCRIPTION_TEXT_ONLY
 
     @tool(name=name, description=description, context="tool_context")
     async def read_tool(
@@ -143,7 +151,13 @@ def make_read(
                 ],
             }
 
-        content = await active.read_text(path)
+        try:
+            content = await active.read_text(path)
+        except UnicodeDecodeError as error:
+            raise ValueError(
+                f"{path} is not UTF-8 text (decode failed at byte {error.start}). If it is a binary "
+                f"file, inspect it with shell tools."
+            ) from error
 
         lines = content.split("\n")
         start = max(0, (offset - 1) if offset else 0)
@@ -152,7 +166,15 @@ def make_read(
         if not window:
             return f"[File has {len(lines)} lines; offset {offset} is past the end.]"
 
-        numbered = _number_lines("\n".join(window), start + 1)
+        window_text = "\n".join(window)
+        window_bytes = len(window_text.encode("utf-8"))
+        if window_bytes > _READ_MAX_BYTES:
+            raise ValueError(
+                f"Read window from {path} is {window_bytes} bytes ({len(window)} lines), exceeding the "
+                f"{_READ_MAX_BYTES}-byte limit. Reduce `limit` or shift `offset` to read a smaller slice."
+            )
+
+        numbered = _number_lines(window_text, start + 1)
         if start > 0 or start + count < len(lines):
             shown_end = start + len(window)
             numbered += f"\n[Showing lines {start + 1}-{shown_end} of {len(lines)}. Use offset/limit to read more.]"
