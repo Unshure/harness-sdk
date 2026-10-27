@@ -9,6 +9,7 @@ path-validation tests run everywhere.
 """
 
 import sys
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -21,12 +22,12 @@ posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX path sema
 
 
 class _FakeAgent:
-    def __init__(self, sandbox: NotASandboxLocalEnvironment | None = None) -> None:
-        self.sandbox = sandbox or NotASandboxLocalEnvironment()
+    def __init__(self, sandbox: object | None = None) -> None:
+        self.sandbox = sandbox if sandbox is not None else NotASandboxLocalEnvironment()
         self.state = AgentState()
 
 
-def _tool_context(sandbox: NotASandboxLocalEnvironment | None = None) -> ToolContext:
+def _tool_context(sandbox: object | None = None) -> ToolContext:
     agent = _FakeAgent(sandbox=sandbox)
     return ToolContext(
         tool_use={"name": "write", "toolUseId": "test-id", "input": {}},
@@ -59,7 +60,7 @@ class TestWrite:
         existing = tmp_path / "f.txt"
         existing.write_text("old content")
         result = await write_tool(path=str(existing), content="new", tool_context=ctx)
-        assert result == f"Wrote 1 lines to {existing}."
+        assert result == f"Wrote 1 line to {existing}."
         assert existing.read_text() == "new"
 
     @pytest.mark.asyncio
@@ -73,7 +74,7 @@ class TestWrite:
     async def test_single_line_without_trailing_newline(self, write_tool, ctx, tmp_path):
         file_path = str(tmp_path / "one.txt")
         result = await write_tool(path=file_path, content="just one line", tool_context=ctx)
-        assert result == f"Wrote 1 lines to {file_path}."
+        assert result == f"Wrote 1 line to {file_path}."
 
     @pytest.mark.asyncio
     async def test_trailing_newline_counts_the_empty_tail(self, write_tool, ctx, tmp_path):
@@ -115,9 +116,11 @@ class TestSandboxBinding:
     async def test_bound_sandbox_overrides_agent_sandbox(self, tmp_path):
         bound = NotASandboxLocalEnvironment()
         bound_tool = make_write(sandbox=bound)
+        agent_sandbox = AsyncMock()
         file_path = str(tmp_path / "f.txt")
-        await bound_tool(path=file_path, content="from-bound", tool_context=_tool_context())
+        await bound_tool(path=file_path, content="from-bound", tool_context=_tool_context(sandbox=agent_sandbox))
         assert (tmp_path / "f.txt").read_text() == "from-bound"
+        agent_sandbox.write_text.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_default_write_reads_agent_sandbox(self, tmp_path):

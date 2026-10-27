@@ -46,6 +46,10 @@ def make_write(
 
     Returns:
         A decorated tool that writes files through the sandbox.
+
+    Raises:
+        ValueError: When ``path`` is not absolute or contains ``..`` segments
+            (raised by the returned tool at call time).
     """
 
     @tool(name=name, description=description, context="tool_context")
@@ -60,13 +64,18 @@ def make_write(
             path: Absolute path to the file.
             content: The full file content to write.
             tool_context: Injected by the framework. Not user-facing.
+
+        Raises:
+            ValueError: When ``path`` is not absolute or contains ``..``
+                segments.
         """
         validate_absolute_path(path)
         active = sandbox if sandbox is not None else tool_context.agent.sandbox
 
         await active.write_text(path, content)
         line_count = 0 if content == "" else len(content.split("\n"))
-        return f"Wrote {line_count} lines to {path}."
+        noun = "line" if line_count == 1 else "lines"
+        return f"Wrote {line_count} {noun} to {path}."
 
     return write_tool
 
