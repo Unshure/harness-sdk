@@ -124,6 +124,7 @@ class TestSandboxBinding:
 
     @pytest.mark.asyncio
     async def test_default_write_reads_agent_sandbox(self, tmp_path):
+        agent_sandbox = AsyncMock()
         file_path = str(tmp_path / "f.txt")
-        await write(path=file_path, content="from-agent", tool_context=_tool_context())
-        assert (tmp_path / "f.txt").read_text() == "from-agent"
+        await write(path=file_path, content="from-agent", tool_context=_tool_context(sandbox=agent_sandbox))
+        agent_sandbox.write_text.assert_called_once_with(file_path, "from-agent")
