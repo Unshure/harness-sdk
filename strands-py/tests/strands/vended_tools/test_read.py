@@ -254,14 +254,14 @@ class TestNonUtf8:
 
 
 class TestDescription:
-    def test_default_description_mentions_media(self):
+    def test_default_description_appends_media_suffix(self):
         reader_media = make_read()
         assert "return media you can view directly" in reader_media.tool_spec["description"]
 
-    def test_media_off_description_mentions_placeholder(self):
+    def test_media_off_description_omits_media_suffix(self):
         reader_text_only = make_read(media=False)
-        assert "return a short text placeholder" in reader_text_only.tool_spec["description"]
         assert "return media you can view directly" not in reader_text_only.tool_spec["description"]
+        assert "numbered lines" in reader_text_only.tool_spec["description"]
 
     def test_explicit_description_wins(self):
         reader_custom = make_read(media=False, description="Custom.")

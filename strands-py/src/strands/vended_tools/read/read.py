@@ -55,14 +55,11 @@ _DOCUMENT_SIGNATURES: dict[str, tuple[bytes, ...]] = {
 }
 
 DEFAULT_READ_DESCRIPTION = (
-    "Read a file. Text returns `cat -n` style numbered lines so you can cite `path:line`; "
-    "images (png/jpg/jpeg/gif/webp) and binary documents (pdf/doc/docx/xls/xlsx) return media "
-    "you can view directly. Files must use absolute paths."
+    "Read a file. Text returns `cat -n` style numbered lines so you can cite `path:line`. "
+    "Files must use absolute paths."
 )
-_DEFAULT_READ_DESCRIPTION_TEXT_ONLY = (
-    "Read a file. Text returns `cat -n` style numbered lines so you can cite `path:line`; "
-    "images and binary documents return a short text placeholder because this model does not "
-    "accept media. Files must use absolute paths."
+_MEDIA_DESCRIPTION_SUFFIX = (
+    " Images (png/jpg/jpeg/gif/webp) and binary documents (pdf/doc/docx/xls/xlsx) return media you can view directly."
 )
 
 
@@ -91,7 +88,7 @@ def make_read(
         A decorated tool that reads files through the sandbox.
     """
     if description is None:
-        description = DEFAULT_READ_DESCRIPTION if media else _DEFAULT_READ_DESCRIPTION_TEXT_ONLY
+        description = DEFAULT_READ_DESCRIPTION + (_MEDIA_DESCRIPTION_SUFFIX if media else "")
 
     @tool(name=name, description=description, context="tool_context")
     async def read_tool(
