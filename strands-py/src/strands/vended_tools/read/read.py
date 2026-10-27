@@ -1,11 +1,11 @@
 """Sandbox-routed read tool.
 
 Reads a file through a :class:`~strands.sandbox.base.Sandbox`: either one bound
-at creation (as the built-in Docker/SSH sandboxes do when vending tools) or the
-agent's configured sandbox read from ``tool_context.agent.sandbox`` at call
-time. Text files return ``cat -n`` style numbered lines so the model can cite
-``path:line``; images (png/jpg/jpeg/gif/webp) and binary documents
-(pdf/doc/docx/xls/xlsx) return as media content blocks when ``media`` is on.
+at creation via :func:`make_read` or the agent's configured sandbox read from
+``tool_context.agent.sandbox`` at call time. Text files return ``cat -n`` style
+numbered lines so the model can cite ``path:line``; images (png/jpg/jpeg/gif/webp)
+and binary documents (pdf/doc/docx/xls/xlsx) return as media content blocks when
+``media`` is on.
 """
 
 from __future__ import annotations
