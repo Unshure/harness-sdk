@@ -90,6 +90,10 @@ def make_read(
             limit: Maximum number of lines to return. Defaults to 2000. Text files only.
         """
         validate_absolute_path(path)
+        if offset is not None and offset < 1:
+            raise ValueError(f"offset must be a positive 1-indexed line number, got {offset}.")
+        if limit is not None and limit < 1:
+            raise ValueError(f"limit must be a positive line count, got {limit}.")
         active = sandbox if sandbox is not None else tool_context.agent.sandbox
         extension = _extension(path)
 

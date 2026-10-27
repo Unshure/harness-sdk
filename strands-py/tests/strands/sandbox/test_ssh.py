@@ -189,7 +189,7 @@ async def test_rejects_invalid_env_var_names(mock_stream_process):
 
 def test_get_tools_vends_file_editor_and_shell():
     tools = SshSandbox("myhost", working_dir="/workspace").get_tools()
-    assert [t.tool_name for t in tools] == ["sandbox_file_editor", "sandbox_shell"]
+    assert [t.tool_name for t in tools] == ["sandbox_file_editor", "sandbox_read", "sandbox_shell"]
 
 
 def test_get_tools_shell_description_names_host():

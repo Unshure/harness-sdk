@@ -12,6 +12,8 @@ from typing import Any
 from ..types.tools import AgentTool
 from ..vended_tools.file_editor import make_file_editor
 from ..vended_tools.file_editor.file_editor import DEFAULT_FILE_EDITOR_DESCRIPTION
+from ..vended_tools.read import make_read
+from ..vended_tools.read.read import DEFAULT_READ_DESCRIPTION
 from ..vended_tools.shell import make_shell
 from ..vended_tools.shell.types import SANDBOX_SHELL_DESCRIPTION
 from .posix_shell import PosixShellSandbox, build_shell_env_prefix
@@ -199,6 +201,11 @@ class SshSandbox(PosixShellSandbox):
             )
         return [
             file_editor_tool,
+            make_read(
+                sandbox=self,
+                name="sandbox_read",
+                description=f'{DEFAULT_READ_DESCRIPTION} Files are on host "{self.host}".',
+            ),
             make_shell(
                 sandbox=self,
                 name="sandbox_shell",

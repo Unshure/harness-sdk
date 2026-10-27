@@ -76,10 +76,11 @@ class TestReadImage:
         file_path = tmp_path / "pic.png"
         file_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
         result = await reader(path=str(file_path), tool_context=ctx)
-        assert result["status"] == "success"
-        image = result["content"][0]["image"]
-        assert image["format"] == "png"
-        assert image["source"]["bytes"] == b"\x89PNG\r\n\x1a\nfake"
+        assert result == {
+            "toolUseId": "test-id",
+            "status": "success",
+            "content": [{"image": {"format": "png", "source": {"bytes": b"\x89PNG\r\n\x1a\nfake"}}}],
+        }
 
     @pytest.mark.asyncio
     async def test_jpg_extension_maps_to_jpeg_format(self, reader, ctx, tmp_path):
@@ -137,10 +138,19 @@ class TestReadDocument:
         file_path = tmp_path / "my report_v2.pdf"
         file_path.write_bytes(b"%PDF-1.4 fake")
         result = await reader(path=str(file_path), tool_context=ctx)
-        document = result["content"][0]["document"]
-        assert document["format"] == "pdf"
-        assert document["name"] == "my report v2 pdf"
-        assert document["source"]["bytes"] == b"%PDF-1.4 fake"
+        assert result == {
+            "toolUseId": "test-id",
+            "status": "success",
+            "content": [
+                {
+                    "document": {
+                        "format": "pdf",
+                        "name": "my report v2 pdf",
+                        "source": {"bytes": b"%PDF-1.4 fake"},
+                    }
+                }
+            ],
+        }
 
     @pytest.mark.asyncio
     async def test_text_representable_format_stays_numbered(self, reader, ctx, tmp_path):
@@ -188,6 +198,24 @@ class TestPathValidation:
     async def test_path_traversal_rejected(self, reader, ctx):
         with pytest.raises(ValueError, match="path traversal"):
             await reader(path="/tmp/../etc/passwd", tool_context=ctx)
+
+
+class TestOffsetLimitValidation:
+    @pytest.mark.parametrize("offset", [0, -1, -100])
+    @pytest.mark.asyncio
+    async def test_non_positive_offset_rejected(self, reader, ctx, tmp_path, offset):
+        file_path = tmp_path / "f.txt"
+        file_path.write_text("one\n")
+        with pytest.raises(ValueError, match="offset must be a positive"):
+            await reader(path=str(file_path), offset=offset, tool_context=ctx)
+
+    @pytest.mark.parametrize("limit", [0, -1, -100])
+    @pytest.mark.asyncio
+    async def test_non_positive_limit_rejected(self, reader, ctx, tmp_path, limit):
+        file_path = tmp_path / "f.txt"
+        file_path.write_text("one\n")
+        with pytest.raises(ValueError, match="limit must be a positive"):
+            await reader(path=str(file_path), limit=limit, tool_context=ctx)
 
 
 class TestAgentSandboxFallback:
