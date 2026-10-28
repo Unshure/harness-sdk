@@ -1,12 +1,12 @@
 """Harness-authored tools.
 
-Thin, self-contained tools that fill gaps in the SDK's vended set. Each is a candidate to port
-into the core SDK later; keep them minimal and SDK-idiomatic.
+Thin, self-contained tools that fill gaps in the SDK's vended set. The ``read``, ``write``, and
+``edit`` filesystem tools are re-exported from ``strands.vended_tools`` so consumers can import them
+either from the SDK directly or from this sub-package.
 """
 
-from strands.vended_tools import edit
+from strands.vended_tools import edit, make_read, make_write, read, write
 
-from strands_harness.tools.file_tools import make_read, read, write
 from strands_harness.tools.programmatic_tool_caller import (
     DEFAULT_PROGRAMMATIC_TOOL_CALLER_DESCRIPTION,
     make_programmatic_tool_caller,
@@ -35,12 +35,13 @@ __all__ = [
     "Option",
     "Preset",
     "edit",
+    "exa_web_search",
+    "make_exa_web_search",
     "make_programmatic_tool_caller",
     "make_read",
     "make_subagent",
-    "exa_web_search",
-    "make_exa_web_search",
     "make_web_fetch",
+    "make_write",
     "programmatic_tool_caller",
     "read",
     "write",
